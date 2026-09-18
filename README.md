@@ -1,0 +1,128 @@
+# Adaptive Greedy Search (AGS)
+
+Surrogate-guided hyperparameter search over a discrete grid. Greedy
+hill-climbing with a TPE (or Gaussian Process) surrogate, radius-based
+plateau escape instead of a full-grid scan, and sequential fold-by-fold
+cross-validation with bound-based pruning so clearly-uncompetitive
+candidates get cut short instead of running to completion.
+
+```python
+from ags import AdaptiveGreedySearch
+```
+
+## Why
+
+`GridSearchCV` evaluates every combination — correct, but wasteful once
+the grid gets large. `RandomizedSearchCV` is cheap but has no memory:
+it never uses what it already learned from earlier trials to pick the
+next one. Bayesian approaches like Optuna's TPE fix that by modeling
+which regions of the space look promising, but a general-purpose
+sampler still spends full cross-validation budget on every trial, good
+or bad.
+
+AGS combines both ideas for the specific case of a **discrete**
+hyperparameter grid:
+
+- **A surrogate model** (TPE by default) learns from every evaluated
+  point which regions of the grid look promising, and steers the next
+  choice there instead of sampling blindly.
+- **Greedy hill-climbing with plateau escape**: it moves to the best
+  neighboring grid point each step, and when the immediate neighborhood
+  is exhausted, expands outward ring by ring (bounded by
+  `max_neighbor_radius`) rather than falling back to scanning the whole
+  grid.
+- **Pruned cross-validation**: each candidate's CV folds run
+  sequentially, and a candidate is stopped early once it's
+  mathematically or statistically out of contention against the best
+  result seen so far — so compute isn't wasted finishing out folds for
+  a configuration that's already lost.
+
+The result: for a fixed evaluation budget, it tends to land on a better
+configuration than random search on reasonably smooth hyperparameter
+landscapes, and at lower wall-clock cost than grid search or plain
+Bayesian search, because it also cuts the *inside* of each evaluation
+(the CV folds), not just the *number* of evaluations.
+
+**Where it's not the right tool:** landscapes where quality is scattered
+with no local structure (grid distance doesn't correlate with
+performance), very small evaluation budgets (the surrogate needs a
+handful of points before it's useful), or cases where you need the
+completeness guarantee of exhaustive grid search.
+
+## Installation
+
+```bash
+pip install adaptive-greedy-search
+```
+
+Or, from a cloned copy of this repository:
+
+```bash
+pip install -e .
+```
+
+Requires Python 3.8+, `numpy`, and `scikit-learn` (installed automatically).
+
+## Quickstart
+
+```python
+from ags import AdaptiveGreedySearch
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.datasets import make_classification
+
+X, y = make_classification(n_samples=500, n_features=20, random_state=0)
+
+param_grid = {
+    "n_estimators": [50, 100, 150, 200],
+    "max_depth": [3, 5, 7, 9, None],
+    "min_samples_split": [2, 4, 6, 8],
+}
+
+search = AdaptiveGreedySearch(
+    RandomForestClassifier(random_state=0),
+    param_grid,
+    cv=5,                  # pruning gives little benefit below cv=5; use 5-10
+    scoring="accuracy",
+    max_evaluations=30,
+)
+search.fit(X, y)
+
+print(search.best_params)
+print(search.best_score)
+print(f"folds saved by pruning: {search.folds_saved}/{search.total_folds_possible}")
+```
+
+## Key parameters
+
+| Parameter | Default | What it does |
+|---|---|---|
+| `cv` | `3` | Number of CV folds. Pruning is far more effective at `5` or `10` — with `3` there's barely a checkpoint before the last fold. |
+| `scoring` | `"accuracy"` | Any scikit-learn scorer string (`"accuracy"`, `"neg_mean_squared_error"`, `"roc_auc"`, ...). |
+| `max_evaluations` | `25` | Hard cap on the number of grid points evaluated. |
+| `surrogate_type` | `"tpe"` | `"tpe"` (Tree-structured Parzen Estimator, cheap to refit) or `"gp"` (Gaussian Process, better calibrated uncertainty but costlier as evaluations grow). |
+| `pruning_strategy` | `"percentile"` | `"percentile"` (aggressive — compares a candidate against the historical distribution of other candidates at the same fold count), `"optimistic"` (safe — only prunes when a candidate is *mathematically* unable to beat the current best), or `"none"` (exhaustive CV, no pruning). |
+| `pruning_percentile` | `25` | Lower = stricter pruning (fewer candidates survive) when using `"percentile"`. |
+| `early_stopping_patience` | `5` | Stop the whole search if the best score hasn't improved for this many consecutive evaluations. Set to `None` to always run to `max_evaluations`. |
+| `max_neighbor_radius` | `4` | How many rings outward the plateau-escape step is allowed to search before falling back to scoring the remaining grid. |
+
+## Choosing a pruning strategy
+
+- Want speed and can tolerate a small chance of pruning a candidate
+  that might have recovered? Use the default `"percentile"`.
+- Want a guarantee that pruning never changes the final answer versus
+  running exhaustively? Use `"optimistic"`.
+- Establishing a baseline, or debugging unexpected results? Use
+  `"none"` to fall back to plain exhaustive cross-validation.
+
+## What you get back after `.fit(X, y)`
+
+- `best_params`, `best_score`, `best_state` — the winning configuration.
+- `history` — a list of dicts, one per evaluated candidate, including
+  `n_folds_used`, `n_folds_total`, and whether/why it was pruned.
+- `n_evaluations`, `total_time`, `stopped_early`.
+- `n_pruned`, `total_folds_run`, `total_folds_possible`, `folds_saved`
+  — how much cross-validation work was actually skipped.
+
+## License
+
+MIT © Mohammad Jawad Hasan

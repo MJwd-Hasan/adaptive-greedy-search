@@ -1,0 +1,12 @@
+LICENSE
+README.md
+pyproject.toml
+adaptive_greedy_search.egg-info/PKG-INFO
+adaptive_greedy_search.egg-info/SOURCES.txt
+adaptive_greedy_search.egg-info/dependency_links.txt
+adaptive_greedy_search.egg-info/requires.txt
+adaptive_greedy_search.egg-info/top_level.txt
+ags/__init__.py
+ags/core.py
+ags/surrogates.py
+ags/utils.py
