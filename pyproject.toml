@@ -26,8 +26,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/YOUR_GITHUB_USERNAME/adaptive-greedy-search"
-Repository = "https://github.com/YOUR_GITHUB_USERNAME/adaptive-greedy-search"
+Homepage = "https://github.com/MJwd-Hasan/adaptive-greedy-search"
+Repository = "https://github.com/MJwd-Hasan/adaptive-greedy-search"
 
 [tool.setuptools]
 packages = ["ags"]
