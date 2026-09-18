@@ -4,8 +4,8 @@ Version: 2.0.0
 Summary: AGS (Adaptive Greedy Search): surrogate-guided hyperparameter search with plateau escape and pruned cross-validation.
 Author: Mohammad Jawad Hasan
 License: MIT
-Project-URL: Homepage, https://github.com/MJwd-Hasan/adaptive-greedy-search
-Project-URL: Repository, https://github.com/MJwd-Hasan/adaptive-greedy-search
+Project-URL: Homepage, https://github.com/YOUR_GITHUB_USERNAME/adaptive-greedy-search
+Project-URL: Repository, https://github.com/YOUR_GITHUB_USERNAME/adaptive-greedy-search
 Keywords: hyperparameter-optimization,machine-learning,scikit-learn,AutoML,TPE
 Classifier: Programming Language :: Python :: 3
 Classifier: License :: OSI Approved :: MIT License
@@ -117,7 +117,7 @@ print(f"folds saved by pruning: {search.folds_saved}/{search.total_folds_possibl
 
 | Parameter | Default | What it does |
 |---|---|---|
-| `cv` | `5` | Number of CV folds. Pruning is far more effective at `5` or `10` — with `3` there's barely a checkpoint before the last fold (3 was fixed in the earlier version). |
+| `cv` | `5` | Number of CV folds. Pruning is far more effective at `5` or `10`. |
 | `scoring` | `"accuracy"` | Any scikit-learn scorer string (`"accuracy"`, `"neg_mean_squared_error"`, `"roc_auc"`, ...). |
 | `max_evaluations` | `25` | Hard cap on the number of grid points evaluated. |
 | `surrogate_type` | `"tpe"` | `"tpe"` (Tree-structured Parzen Estimator, cheap to refit) or `"gp"` (Gaussian Process, better calibrated uncertainty but costlier as evaluations grow). |
