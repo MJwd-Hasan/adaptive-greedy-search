@@ -51,7 +51,7 @@ class AdaptiveGreedySearch:
         self,
         estimator,
         param_grid,
-        cv=3,
+        cv=5,
         scoring="accuracy",
         initial_points=8,
         max_evaluations=25,

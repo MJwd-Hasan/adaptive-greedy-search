@@ -117,7 +117,7 @@ print(f"folds saved by pruning: {search.folds_saved}/{search.total_folds_possibl
 
 | Parameter | Default | What it does |
 |---|---|---|
-| `cv` | `3` | Number of CV folds. Pruning is far more effective at `5` or `10` — with `3` there's barely a checkpoint before the last fold. |
+| `cv` | `5` | Number of CV folds. Pruning is far more effective at `5` or `10` — with `3` there's barely a checkpoint before the last fold (3 was fixed in the earlier version). |
 | `scoring` | `"accuracy"` | Any scikit-learn scorer string (`"accuracy"`, `"neg_mean_squared_error"`, `"roc_auc"`, ...). |
 | `max_evaluations` | `25` | Hard cap on the number of grid points evaluated. |
 | `surrogate_type` | `"tpe"` | `"tpe"` (Tree-structured Parzen Estimator, cheap to refit) or `"gp"` (Gaussian Process, better calibrated uncertainty but costlier as evaluations grow). |
