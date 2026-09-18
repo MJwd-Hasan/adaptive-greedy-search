@@ -4,8 +4,8 @@ Version: 2.0.0
 Summary: AGS (Adaptive Greedy Search): surrogate-guided hyperparameter search with plateau escape and pruned cross-validation.
 Author: Mohammad Jawad Hasan
 License: MIT
-Project-URL: Homepage, https://github.com/YOUR_GITHUB_USERNAME/adaptive-greedy-search
-Project-URL: Repository, https://github.com/YOUR_GITHUB_USERNAME/adaptive-greedy-search
+Project-URL: Homepage, https://github.com/MJwd-Hasan/adaptive-greedy-search
+Project-URL: Repository, https://github.com/MJwd-Hasan/adaptive-greedy-search
 Keywords: hyperparameter-optimization,machine-learning,scikit-learn,AutoML,TPE
 Classifier: Programming Language :: Python :: 3
 Classifier: License :: OSI Approved :: MIT License
