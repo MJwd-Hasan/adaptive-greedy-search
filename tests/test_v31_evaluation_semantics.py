@@ -156,5 +156,10 @@ def test_surrogate_training_excludes_partial_observations():
     search.fit_surrogate()
 
     assert captured["X"].shape[0] == 3
-    assert set(map(tuple, captured["X"].astype(int))) == {(0,), (1,), (2,)}
+    expected = np.array([
+        search.state_to_features((0,)),
+        search.state_to_features((1,)),
+        search.state_to_features((2,)),
+    ])
+    assert np.allclose(captured["X"], expected)
     assert 0.99 not in captured["y"]
