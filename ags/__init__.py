@@ -16,16 +16,23 @@ internally by the package.
 """
 
 from .core import AdaptiveGreedySearch, Climber
-from .surrogates import TPESurrogate, build_gp_surrogate
+from .surrogates import (
+    RandomForestSurrogate,
+    KDEDensityRatioSurrogate,
+    TPESurrogate,
+    build_gp_surrogate,
+)
 from .search_space import NumericParameter, OrdinalParameter, CategoricalParameter
 
 __all__ = [
     "AdaptiveGreedySearch",
     "Climber",
+    "RandomForestSurrogate",
+    "KDEDensityRatioSurrogate",
     "TPESurrogate",
     "build_gp_surrogate",
     "NumericParameter",
     "OrdinalParameter",
     "CategoricalParameter",
 ]
-__version__ = "3.2.0"
+__version__ = "3.3.0"
