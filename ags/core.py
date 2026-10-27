@@ -1,13 +1,12 @@
 """
 Core AdaptiveGreedySearch implementation.
 
-AGS uses a multi-start parallel swarm over a typed discrete search space.
-Climbers share a surrogate trained only on completed CV evaluations and
-use a configurable acquisition function after a configurable warm-up.
+AGS uses a multi-start parallel swarm over a typed, optionally conditional
+discrete search space. Candidate pools are generated lazily, so the optimizer
+does not need to materialize the full Cartesian product.
 """
 
 
-import itertools
 import math
 import time
 import warnings
@@ -24,7 +23,7 @@ from sklearn.metrics import get_scorer
 
 from .acquisition import acquisition_scores
 from .surrogates import make_surrogate
-from .search_space import infer_parameter
+from .search_space import StructuredSearchSpace
 from .utils import safe_index
 
 
@@ -287,6 +286,7 @@ class AdaptiveGreedySearch:
         racing_confidence=0.95,
         diversity_weight=0.25,
         restart_diversity_weight=0.5,
+        candidate_pool_size=256,
     ):
 
         if n_climbers is None:
@@ -309,6 +309,8 @@ class AdaptiveGreedySearch:
             raise ValueError("racing_confidence must be between 0 and 1.")
         if diversity_weight < 0 or restart_diversity_weight < 0:
             raise ValueError("Diversity weights must be non-negative.")
+        if candidate_pool_size < 8:
+            raise ValueError("candidate_pool_size must be >= 8.")
 
         self.estimator = estimator
         self.param_grid = param_grid
@@ -348,6 +350,7 @@ class AdaptiveGreedySearch:
         self.racing_confidence = float(racing_confidence)
         self.diversity_weight = float(diversity_weight)
         self.restart_diversity_weight = float(restart_diversity_weight)
+        self.candidate_pool_size = int(candidate_pool_size)
 
         valid_acquisitions = {
             "auto", "ucb", "ei", "expected_improvement", "density_ratio"
@@ -384,12 +387,12 @@ class AdaptiveGreedySearch:
 
         self.rng = np.random.default_rng(random_state)
 
-        self.parameter_names = list(param_grid.keys())
-        self.parameters = [infer_parameter(param_grid[p]) for p in self.parameter_names]
-        self.values = [list(parameter.values) for parameter in self.parameters]
-        self.all_states = list(
-            itertools.product(*[range(len(v)) for v in self.values])
-        )
+        self.search_space = StructuredSearchSpace(param_grid)
+        self.parameter_names = self.search_space.parameter_names
+        self.parameters = self.search_space.parameters
+        self.values = self.search_space.values
+        self.search_space_size_upper_bound = self.search_space.size_upper_bound
+        self.lazy_search = True
 
         if min_observations is not None and min_observations < 2:
             raise ValueError("min_observations must be >= 2 when specified.")
@@ -398,7 +401,10 @@ class AdaptiveGreedySearch:
             if min_observations is not None
             else max(2 * len(self.parameters), 10)
         )
-        self.min_observations = min(requested_warmup, max(len(self.all_states), 1))
+        self.min_observations = min(
+            requested_warmup,
+            max(self.search_space_size_upper_bound, 1),
+        )
         self._surrogate_fitted = False
 
         # v3.1 evaluation semantics:
@@ -474,47 +480,25 @@ class AdaptiveGreedySearch:
     # ========================================================
 
     def state_to_params(self, state):
-        return {
-            p: self.values[j][state[j]]
-            for j, p in enumerate(self.parameter_names)
-        }
+        """Convert a structured state to estimator params, omitting inactive keys."""
+        return self.search_space.state_to_params(state)
 
     def state_to_features(self, state):
-        """
-        Encode a state using parameter semantics.
-
-        Numeric dimensions become normalized numeric values, ordinal
-        dimensions become normalized ranks, and categorical dimensions
-        become one-hot vectors. This prevents nominal categories from
-        acquiring an artificial index ordering inside the surrogate.
-        """
-        features = []
-        for parameter, index in zip(self.parameters, state):
-            features.extend(parameter.encode(index))
-        return features
+        """Encode values plus conditional active masks for the surrogate."""
+        return self.search_space.encode(state)
 
     def distance(self, a, b):
-        """Typed mixed-space distance used by all distance-aware search logic."""
-        return float(sum(
-            parameter.distance(left, right)
-            for parameter, left, right in zip(self.parameters, a, b)
-        ))
+        """Conditional-aware typed distance."""
+        return self.search_space.distance(a, b)
 
     def _semantic_neighbors(self, state, unvisited_only=True):
-        """
-        Generate one-parameter semantic moves.
-
-        Numeric and ordinal dimensions move to adjacent ordered values.
-        Categorical dimensions may move to any other category.
-        """
-        neighbors = []
-        for i, parameter in enumerate(self.parameters):
-            for new_index in parameter.neighbor_indices(state[i]):
-                new_state = list(state)
-                new_state[i] = new_index
-                new_state = tuple(new_state)
-                if not unvisited_only or new_state not in self.visited_states:
-                    neighbors.append(new_state)
+        """Generate only valid semantic neighbors in the structured space."""
+        neighbors = self.search_space.neighbors(state)
+        if unvisited_only:
+            neighbors = [
+                neighbor for neighbor in neighbors
+                if neighbor not in self.visited_states
+            ]
         return neighbors
 
     def get_neighbors(self, state):
@@ -546,34 +530,48 @@ class AdaptiveGreedySearch:
     # MAX-MIN (FARTHEST-POINT) SEEDING
     # ========================================================
 
-    def _get_max_min_seeds(self, n_seeds):
-        """
-        Greedy farthest-point sampling on the grid: start from one random
-        state, then repeatedly add the state whose minimum typed mixed-space
-        distance to all already-chosen seeds is largest. Seeds therefore
-        land in semantically different regions of the hyperparameter space.
-        """
-        states = self.all_states
-        n = len(states)
-        n_seeds = min(n_seeds, n)
-
-        first_idx = int(self.rng.integers(n))
-        chosen_idx = [first_idx]
-
-        min_dist = np.array(
-            [self.distance(states[first_idx], s) for s in states], dtype=float
+    def _candidate_pool(self, excluded=None, size=None):
+        """Build a bounded lazy candidate pool instead of materializing the grid."""
+        excluded = set(excluded or ())
+        excluded.update(self.visited_states)
+        size = int(size or self.candidate_pool_size)
+        return self.search_space.sample_states(
+            self.rng,
+            size,
+            exclude=excluded,
         )
 
-        for _ in range(n_seeds - 1):
-            min_dist[chosen_idx] = -1.0     # never re-pick a chosen state
-            next_idx = int(np.argmax(min_dist))
-            chosen_idx.append(next_idx)
-            new_dist = np.array(
-                [self.distance(states[next_idx], s) for s in states], dtype=float
-            )
-            min_dist = np.minimum(min_dist, new_dist)
+    def _get_max_min_seeds(self, n_seeds):
+        """Lazy farthest-point seeding from a bounded valid candidate pool."""
+        n_seeds = max(0, int(n_seeds))
+        if n_seeds == 0:
+            return []
 
-        return [states[i] for i in chosen_idx]
+        pool_size = max(self.candidate_pool_size, n_seeds * 8)
+        candidates = self.search_space.sample_states(
+            self.rng,
+            pool_size,
+            exclude=(),
+        )
+        if not candidates:
+            return []
+
+        n_seeds = min(n_seeds, len(candidates))
+        first_idx = int(self.rng.integers(len(candidates)))
+        chosen = [candidates[first_idx]]
+
+        while len(chosen) < n_seeds:
+            remaining = [state for state in candidates if state not in chosen]
+            if not remaining:
+                break
+            nearest = np.array([
+                min(self.distance(state, seed) for seed in chosen)
+                for state in remaining
+            ], dtype=float)
+            best = np.flatnonzero(np.isclose(nearest, nearest.max()))
+            chosen.append(remaining[int(self.rng.choice(best))])
+
+        return chosen
 
     # ========================================================
     # SURROGATE
@@ -681,10 +679,10 @@ class AdaptiveGreedySearch:
 
     def _spawn_climber(self, exclude):
         """Respawn using acquisition quality plus distance from active basins."""
-        remaining = [
-            s for s in self.all_states
-            if s not in self.visited_states and s not in exclude
-        ]
+        remaining = self._candidate_pool(
+            excluded=exclude,
+            size=self.candidate_pool_size,
+        )
         if not remaining:
             return None
 
@@ -711,12 +709,12 @@ class AdaptiveGreedySearch:
         return climber
 
     def _get_space_filling_candidate(self, excluded=None):
-        """Pick an unvisited state farthest from observed and in-batch states."""
+        """Pick a diverse candidate from a bounded lazy pool."""
         excluded = set(excluded or ())
-        remaining = [
-            state for state in self.all_states
-            if state not in self.visited_states and state not in excluded
-        ]
+        remaining = self._candidate_pool(
+            excluded=excluded,
+            size=self.candidate_pool_size,
+        )
         if not remaining:
             return None
 
@@ -730,8 +728,7 @@ class AdaptiveGreedySearch:
         ], dtype=float)
         best_distance = nearest_distances.max()
         tied = np.flatnonzero(np.isclose(nearest_distances, best_distance))
-        selected = int(self.rng.choice(tied))
-        return remaining[selected]
+        return remaining[int(self.rng.choice(tied))]
 
     def _resolve_plateau(self, start_state, excluded=None):
         """
@@ -1018,7 +1015,7 @@ class AdaptiveGreedySearch:
         self._cv_splits = list(self._cv_splitter.split(X, y))
 
         # ---- Max-Min initialization of the swarm ----
-        n_seeds = min(self.n_climbers, self.max_evaluations, len(self.all_states))
+        n_seeds = min(self.n_climbers, self.max_evaluations)
         seeds = self._get_max_min_seeds(n_seeds)
         self.climbers = [
             Climber(
@@ -1031,7 +1028,10 @@ class AdaptiveGreedySearch:
         self._climber_by_id = {c.id: c for c in self.climbers}
         self._next_climber_idx = len(self.climbers)
 
-        budget = min(self.max_evaluations, len(self.all_states))
+        budget = min(
+            self.max_evaluations,
+            self.search_space_size_upper_bound,
+        )
         best_so_far = -np.inf
         evals_since_improvement = 0
         self.stopped_early = False
@@ -1115,5 +1115,7 @@ class AdaptiveGreedySearch:
         self.mean_fidelity = float(np.mean([
             h["fidelity"] for h in self.history
         ])) if self.history else 0.0
+        self.candidate_pool_size_used = self.candidate_pool_size
+        self.has_conditional_parameters = self.search_space.has_conditionals
 
         return self
