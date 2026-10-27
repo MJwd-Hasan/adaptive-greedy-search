@@ -935,6 +935,8 @@ All distance-based logic must use the same typed representation.
 
 # Version 3.3 — Principled Surrogate and Acquisition
 
+**Status: Implemented as v3.3.0.** The implementation is committed to `main`; the final CI run and GitHub release are tracked by the release workflow.
+
 ## Objective
 
 Replace heuristic uncertainty interpretation with a surrogate/acquisition pair that has a defensible meaning.
@@ -997,7 +999,7 @@ This value should later be benchmarked.
 - TPE no longer reports heuristic ambiguity as posterior standard deviation;
 - acquisition choice is separated from surrogate implementation;
 - surrogate-guided search begins only after warm-up;
-- benchmark results compare RF, GP, and TPE modes.
+- regression tests cover RF, GP acquisition plumbing, KDE density-ratio behavior, warm-up, and end-to-end runs. Cross-optimizer benchmark results remain future validation work.
 
 ---
 
