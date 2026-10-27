@@ -17,6 +17,15 @@ internally by the package.
 
 from .core import AdaptiveGreedySearch, Climber
 from .surrogates import TPESurrogate, build_gp_surrogate
+from .search_space import NumericParameter, OrdinalParameter, CategoricalParameter
 
-__all__ = ["AdaptiveGreedySearch", "Climber", "TPESurrogate", "build_gp_surrogate"]
-__version__ = "3.1.0"
+__all__ = [
+    "AdaptiveGreedySearch",
+    "Climber",
+    "TPESurrogate",
+    "build_gp_surrogate",
+    "NumericParameter",
+    "OrdinalParameter",
+    "CategoricalParameter",
+]
+__version__ = "3.2.0"
