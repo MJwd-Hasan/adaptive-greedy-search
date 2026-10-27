@@ -19,6 +19,7 @@ from sklearn.base import clone, is_classifier
 from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.metrics import get_scorer
 
+from .acquisition import acquisition_scores
 from .surrogates import make_surrogate
 from .search_space import infer_parameter
 from .utils import safe_index
@@ -237,7 +238,7 @@ class AdaptiveGreedySearch:
         random_state=42,
         max_neighbor_radius=4,        # kept for calculate_f() diagnostics
         early_stopping_patience=None, # optional GLOBAL stop; per-climber patience is the main mechanism
-        surrogate_type="tpe",
+        surrogate_type="rf",
         tpe_gamma=0.25,
         tpe_bandwidth=1.0,
         enable_pruning=True,
@@ -247,6 +248,9 @@ class AdaptiveGreedySearch:
         min_folds_before_pruning=2,
         min_history_for_percentile=10,
         score_upper_bound=None,
+        acquisition="auto",
+        min_observations=None,
+        rf_n_estimators=200,
     ):
 
         if n_climbers is None:
@@ -283,6 +287,29 @@ class AdaptiveGreedySearch:
         self.surrogate_type = surrogate_type
         self.tpe_gamma = tpe_gamma
         self.tpe_bandwidth = tpe_bandwidth
+        self.acquisition = acquisition
+        self.rf_n_estimators = rf_n_estimators
+
+        valid_acquisitions = {
+            "auto", "ucb", "ei", "expected_improvement", "density_ratio"
+        }
+        if acquisition not in valid_acquisitions:
+            raise ValueError(
+                "acquisition must be one of: {}".format(
+                    ", ".join(sorted(valid_acquisitions))
+                )
+            )
+        is_kde = surrogate_type in {"kde", "tpe"}
+        if acquisition == "density_ratio" and not is_kde:
+            raise ValueError(
+                "acquisition='density_ratio' requires surrogate_type='kde'."
+            )
+        if acquisition in {"ucb", "ei", "expected_improvement"} and is_kde:
+            raise ValueError(
+                "The KDE density-ratio surrogate does not expose predictive "
+                "mean/std; use acquisition='auto' or 'density_ratio', or use "
+                "surrogate_type='rf'/'gp'."
+            )
 
         self.enable_pruning = enable_pruning
         self.pruning_strategy = pruning_strategy
@@ -299,6 +326,16 @@ class AdaptiveGreedySearch:
         self.all_states = list(
             itertools.product(*[range(len(v)) for v in self.values])
         )
+
+        if min_observations is not None and min_observations < 2:
+            raise ValueError("min_observations must be >= 2 when specified.")
+        requested_warmup = (
+            int(min_observations)
+            if min_observations is not None
+            else max(2 * len(self.parameters), 10)
+        )
+        self.min_observations = min(requested_warmup, max(len(self.all_states), 1))
+        self._surrogate_fitted = False
 
         # v3.1 evaluation semantics:
         # - visited_states tracks every attempted configuration.
@@ -353,6 +390,7 @@ class AdaptiveGreedySearch:
             tpe_gamma=tpe_gamma,
             tpe_bandwidth=tpe_bandwidth,
             random_state=random_state,
+            rf_n_estimators=rf_n_estimators,
         )
 
     # ========================================================
@@ -453,15 +491,49 @@ class AdaptiveGreedySearch:
     # ========================================================
 
     def fit_surrogate(self):
-        """Fit only on full-CV observations; partial scores are not objective labels."""
+        """Fit the surrogate only on complete CV observations."""
+        if not self.completed_evaluations:
+            raise RuntimeError("At least one complete evaluation is required to fit a surrogate.")
         X_train = np.array(
             [self.state_to_features(state) for state in self.completed_evaluations],
             dtype=float,
         )
         y_train = np.array(list(self.completed_evaluations.values()), dtype=float)
         self.surrogate.fit(X_train, y_train)
+        self._surrogate_fitted = True
+
+    def _surrogate_ready(self):
+        """Whether the configured warm-up target has been met."""
+        return (
+            self._surrogate_fitted
+            and len(self.completed_evaluations) >= self.min_observations
+        )
+
+    def acquisition_scores(self, states):
+        """Score states with the configured acquisition function."""
+        features = np.array(
+            [self.state_to_features(state) for state in states],
+            dtype=float,
+        )
+        best_score = (
+            max(self.completed_evaluations.values())
+            if self.completed_evaluations
+            else None
+        )
+        return acquisition_scores(
+            self.surrogate,
+            features,
+            acquisition=self.acquisition,
+            exploration_weight=self.exploration_weight,
+            best_score=best_score,
+        )
 
     def predict_uncertainty(self, states):
+        """Return predictive mean and spread for RF/GP surrogates only."""
+        if hasattr(self.surrogate, "score_density_ratio"):
+            raise ValueError(
+                "The KDE density-ratio surrogate has no predictive uncertainty."
+            )
         states_array = np.array(
             [self.state_to_features(state) for state in states],
             dtype=float,
@@ -471,22 +543,22 @@ class AdaptiveGreedySearch:
 
     def calculate_f(self, state, start_state):
         """Diagnostic blended distance/quality score. Not in the hot path."""
-        mean, std = self.predict_uncertainty([state])
-        mean = mean[0]
-        std = std[0]
-
-        upper_score = mean + (self.exploration_weight * std)
-
-        observed = np.array(list(self.completed_evaluations.values()))
-        lo, hi = observed.min(), observed.max()
-        span = hi - lo
-        norm_score = np.clip((upper_score - lo) / span, 0.0, 1.0) if span > 0 else 0.5
+        upper_score = float(self.acquisition_scores([state])[0])
+        observed_states = list(self.completed_evaluations)
+        if observed_states:
+            observed_scores = self.acquisition_scores(observed_states)
+            lo, hi = float(np.min(observed_scores)), float(np.max(observed_scores))
+            span = hi - lo
+            norm_score = (
+                np.clip((upper_score - lo) / span, 0.0, 1.0)
+                if span > 0 else 0.5
+            )
+        else:
+            norm_score = 0.5
 
         g_raw = self.distance(start_state, state)
         g = np.clip(g_raw / max(self.max_neighbor_radius, 1), 0.0, 1.0)
-
-        h = 1 - norm_score
-        return g + h
+        return g + (1 - norm_score)
 
     # ========================================================
     # SWARM MECHANICS
@@ -506,17 +578,44 @@ class AdaptiveGreedySearch:
         if not remaining:
             return None
 
-        if len(self.completed_evaluations) >= 3:
-            _, std = self.predict_uncertainty(remaining)
-            state = remaining[int(np.argmax(std))]
+        if self._surrogate_ready():
+            if hasattr(self.surrogate, "score_density_ratio"):
+                scores = self.acquisition_scores(remaining)
+                state = remaining[int(np.argmax(scores))]
+            else:
+                _, std = self.predict_uncertainty(remaining)
+                state = remaining[int(np.argmax(std))]
         else:
-            state = remaining[int(self.rng.integers(len(remaining)))]
+            state = self._get_space_filling_candidate(excluded=exclude)
 
         climber = Climber(id=f"climber_{self._next_climber_idx}", current_state=state)
         self._next_climber_idx += 1
         self.climbers_spawned += 1
         self._climber_by_id[climber.id] = climber
         return climber
+
+    def _get_space_filling_candidate(self, excluded=None):
+        """Pick an unvisited state farthest from observed and in-batch states."""
+        excluded = set(excluded or ())
+        remaining = [
+            state for state in self.all_states
+            if state not in self.visited_states and state not in excluded
+        ]
+        if not remaining:
+            return None
+
+        references = list(self.visited_states | excluded)
+        if not references:
+            return remaining[int(self.rng.integers(len(remaining)))]
+
+        nearest_distances = np.array([
+            min(self.distance(candidate, reference) for reference in references)
+            for candidate in remaining
+        ], dtype=float)
+        best_distance = nearest_distances.max()
+        tied = np.flatnonzero(np.isclose(nearest_distances, best_distance))
+        selected = int(self.rng.choice(tied))
+        return remaining[selected]
 
     def _resolve_plateau(self, start_state, excluded=None):
         """
@@ -553,9 +652,9 @@ class AdaptiveGreedySearch:
         if not candidates:
             return None
 
-        if len(self.completed_evaluations) >= 3:
-            mean, std = self.predict_uncertainty(candidates)   # one batched call
-            return candidates[int(np.argmax(mean + self.exploration_weight * std))]
+        if self._surrogate_ready():
+            scores = self.acquisition_scores(candidates)
+            return candidates[int(np.argmax(scores))]
         return candidates[int(self.rng.integers(len(candidates)))]
 
     def _propose(self):
@@ -579,7 +678,7 @@ class AdaptiveGreedySearch:
         owner = {}         # state -> climber_id that currently holds the claim
         retired_here = []
 
-        have_surrogate = len(self.completed_evaluations) >= 3
+        have_surrogate = self._surrogate_ready()
 
         def claim(climber, candidate):
             rival_id = owner.get(candidate)
@@ -625,11 +724,16 @@ class AdaptiveGreedySearch:
                 continue
 
             if have_surrogate:
-                mean, std = self.predict_uncertainty(neighbors)
-                ucb = mean + self.exploration_weight * std
-                candidate = neighbors[int(np.argmax(ucb))]
+                scores = self.acquisition_scores(neighbors)
+                candidate = neighbors[int(np.argmax(scores))]
             else:
-                candidate = neighbors[int(self.rng.integers(len(neighbors)))]
+                # During warm-up, continue a space-filling design instead of
+                # treating a tiny sample as a reliable surrogate landscape.
+                candidate = self._get_space_filling_candidate(excluded=set(owner))
+                if candidate is None:
+                    self._retire(climber, "stagnated")
+                    retired_here.append(climber)
+                    continue
 
             claim(climber, candidate)
 
@@ -766,7 +870,9 @@ class AdaptiveGreedySearch:
             tpe_gamma=self.tpe_gamma,
             tpe_bandwidth=self.tpe_bandwidth,
             random_state=self.random_state,
+            rf_n_estimators=self.rf_n_estimators,
         )
+        self._surrogate_fitted = False
         self.visited_states = set()
         self.partial_evaluations = {}
         self.completed_evaluations = {}
@@ -829,7 +935,12 @@ class AdaptiveGreedySearch:
                     # 4. update climbers
                     retired_after_eval = self._update_climbers(results)
 
-                if len(self.completed_evaluations) >= 3:
+                if (
+                    len(self.completed_evaluations) >= self.min_observations
+                    and not self._surrogate_fitted
+                ):
+                    self.fit_surrogate()
+                elif self._surrogate_ready() and proposals:
                     self.fit_surrogate()
 
                 # 4. respawn replacements for everyone retired this round
