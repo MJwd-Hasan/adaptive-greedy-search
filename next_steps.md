@@ -1203,13 +1203,15 @@ Experiment with larger exploration swarms early and smaller exploitation swarms 
 
 ---
 
-# Version 4.0 — Conditional Spaces and Lazy Candidate Generation
+# Version 3.7 — Conditional Spaces and Lazy Candidate Generation
+
+**Status: Implemented for v3.7.0.**
 
 ## Objective
 
 Remove the full Cartesian-grid assumption and make AGS capable of operating on substantially larger and structured HPO spaces.
 
-This is the seventh roadmap step and the point where the search-space architecture changes enough to justify a major version increment.
+This is the seventh roadmap step. The originally planned 4.0 scope is intentionally released as 3.7.0 to keep the 3.x evolution continuous.
 
 ## Changes
 
@@ -1317,7 +1319,7 @@ Inactive parameters must be encoded in a way that does not create artificial dis
 | **3.4** | Adaptive exploitation | Trust-region climbers |
 | **3.5** | Sound early resource allocation | Successive Halving / racing |
 | **3.6** | Coordinated swarm search | Diversity-aware batch proposals and restart |
-| **4.0** | Scalable structured HPO | Conditional spaces + lazy candidate generation |
+| **3.7** | Scalable structured HPO | Conditional spaces + lazy candidate generation |
 
 ---
 
@@ -1415,7 +1417,7 @@ This architecture is **deliberately deferred**.
 
 The roadmap above should be implemented first so that every conceptual change can be isolated, tested, benchmarked, and understood.
 
-Only after v4.0 is stable should AGS be reconsidered as a fully redesigned optimization framework.
+Only after v3.7 is stable should AGS be reconsidered as a fully redesigned optimization framework.
 
 ---
 
