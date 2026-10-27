@@ -144,12 +144,18 @@ def _evaluate_worker(
                     break
 
     runtime = time.perf_counter() - start
-    score = float(np.mean(fold_scores))
+    partial_mean = float(np.mean(fold_scores))
+    completed = (not pruned) and (len(fold_scores) == K)
+    score = partial_mean if completed else None
 
     return {
         "state": state,
         "params": params,
         "score": score,
+        "partial_mean": partial_mean,
+        "fold_scores": list(fold_scores),
+        "fidelity": len(fold_scores) / K,
+        "completed": completed,
         "runtime": runtime,
         "n_folds_used": len(fold_scores),
         "n_folds_total": K,
@@ -292,7 +298,15 @@ class AdaptiveGreedySearch:
             itertools.product(*[range(len(v)) for v in self.values])
         )
 
-        self.evaluated = {}
+        # v3.1 evaluation semantics:
+        # - visited_states tracks every attempted configuration.
+        # - partial_evaluations stores pruned / incomplete CV observations.
+        # - completed_evaluations stores only full-CV objective values.
+        # evaluated remains a backward-compatible alias for completed results.
+        self.visited_states = set()
+        self.partial_evaluations = {}
+        self.completed_evaluations = {}
+        self.evaluated = self.completed_evaluations
         self.history = []
 
         # --- swarm bookkeeping ---
@@ -306,11 +320,20 @@ class AdaptiveGreedySearch:
         # --- pruning bookkeeping ---
         self._partial_mean_history = {}       # {fold_index: [partial_means...]}
         self._observed_max_fold_score = -np.inf
-        self.score_upper_bound = (
-            score_upper_bound
-            if score_upper_bound is not None
-            else self._infer_score_upper_bound(scoring)
-        )
+        self.score_upper_bound = score_upper_bound
+        if (
+            self.enable_pruning
+            and self.pruning_strategy == "optimistic"
+            and self.score_upper_bound is None
+        ):
+            warnings.warn(
+                "Optimistic pruning requires an explicit valid score_upper_bound "
+                "in AGS v3.1. Optimistic pruning has been disabled for this run "
+                "because no safe bound was supplied.",
+                UserWarning,
+                stacklevel=2,
+            )
+            self.enable_pruning = False
 
         if is_classifier(estimator):
             self._cv_splitter = StratifiedKFold(
@@ -336,11 +359,8 @@ class AdaptiveGreedySearch:
 
     @staticmethod
     def _infer_score_upper_bound(scoring):
-        if not isinstance(scoring, str):
-            return None
-        if scoring.startswith("neg_"):
-            return 0.0  # e.g. neg_mean_squared_error: perfect = 0
-        return 1.0  # accuracy, f1*, roc_auc*, r2, precision*, recall*, etc.
+        """Deprecated in v3.1: safe pruning bounds must be supplied explicitly."""
+        return None
 
     # ========================================================
     # STATE -> REAL HYPERPARAMETERS
@@ -363,7 +383,7 @@ class AdaptiveGreedySearch:
                 new_state[i] += step
                 if 0 <= new_state[i] < len(self.values[i]):
                     new_state = tuple(new_state)
-                    if new_state not in self.evaluated:
+                    if new_state not in self.visited_states:
                         neighbors.append(new_state)
         return neighbors
 
@@ -405,8 +425,9 @@ class AdaptiveGreedySearch:
     # ========================================================
 
     def fit_surrogate(self):
-        X_train = np.array(list(self.evaluated.keys()), dtype=float)
-        y_train = np.array(list(self.evaluated.values()), dtype=float)
+        """Fit only on full-CV observations; partial scores are not objective labels."""
+        X_train = np.array(list(self.completed_evaluations.keys()), dtype=float)
+        y_train = np.array(list(self.completed_evaluations.values()), dtype=float)
         self.surrogate.fit(X_train, y_train)
 
     def predict_uncertainty(self, states):
@@ -422,7 +443,7 @@ class AdaptiveGreedySearch:
 
         upper_score = mean + (self.exploration_weight * std)
 
-        observed = np.array(list(self.evaluated.values()))
+        observed = np.array(list(self.completed_evaluations.values()))
         lo, hi = observed.min(), observed.max()
         span = hi - lo
         norm_score = np.clip((upper_score - lo) / span, 0.0, 1.0) if span > 0 else 0.5
@@ -446,12 +467,12 @@ class AdaptiveGreedySearch:
         """Spawn a climber at the unvisited state with highest surrogate uncertainty."""
         remaining = [
             s for s in self.all_states
-            if s not in self.evaluated and s not in exclude
+            if s not in self.visited_states and s not in exclude
         ]
         if not remaining:
             return None
 
-        if len(self.evaluated) >= 3:
+        if len(self.completed_evaluations) >= 3:
             _, std = self.predict_uncertainty(remaining)
             state = remaining[int(np.argmax(std))]
         else:
@@ -494,7 +515,7 @@ class AdaptiveGreedySearch:
                                 continue
                             visited.add(new_state)
                             next_frontier.append(new_state)
-                            if new_state not in self.evaluated and new_state not in excluded:
+                            if new_state not in self.visited_states and new_state not in excluded:
                                 candidates.append(new_state)
             frontier = next_frontier
             if candidates or not frontier:
@@ -503,7 +524,7 @@ class AdaptiveGreedySearch:
         if not candidates:
             return None
 
-        if len(self.evaluated) >= 3:
+        if len(self.completed_evaluations) >= 3:
             mean, std = self.predict_uncertainty(candidates)   # one batched call
             return candidates[int(np.argmax(mean + self.exploration_weight * std))]
         return candidates[int(self.rng.integers(len(candidates)))]
@@ -529,7 +550,7 @@ class AdaptiveGreedySearch:
         owner = {}         # state -> climber_id that currently holds the claim
         retired_here = []
 
-        have_surrogate = len(self.evaluated) >= 3
+        have_surrogate = len(self.completed_evaluations) >= 3
 
         def claim(climber, candidate):
             rival_id = owner.get(candidate)
@@ -555,7 +576,7 @@ class AdaptiveGreedySearch:
         scored = [c for c in active if c.current_score != NEG_INF]
 
         for climber in fresh:
-            if climber.current_state in self.evaluated:
+            if climber.current_state in self.visited_states:
                 self._retire(climber, "merged")     # start state already visited
                 retired_here.append(climber)
                 continue
@@ -591,7 +612,11 @@ class AdaptiveGreedySearch:
         dictionaries; this (main-process) method merges them into the
         global caches, so no shared state is mutated inside a worker.
         """
-        incumbent = max(self.evaluated.values()) if self.evaluated else None
+        incumbent = (
+            max(self.completed_evaluations.values())
+            if self.completed_evaluations
+            else None
+        )
         history_snapshot = {
             k: list(v) for k, v in self._partial_mean_history.items()
         }
@@ -626,39 +651,56 @@ class AdaptiveGreedySearch:
             state = res["state"]
 
             # ---- safe merge into global state (main process only) ----
-            self.evaluated[state] = res["score"]
-            self.history.append({
+            self.visited_states.add(state)
+
+            observation = {
                 "state": state,
                 "params": res["params"],
                 "score": res["score"],
+                "partial_mean": res["partial_mean"],
+                "fold_scores": res["fold_scores"],
+                "fidelity": res["fidelity"],
                 "runtime": res["runtime"],
                 "n_folds_used": res["n_folds_used"],
                 "n_folds_total": res["n_folds_total"],
+                "completed": res["completed"],
                 "pruned": res["pruned"],
                 "prune_reason": res["prune_reason"],
                 "climber_id": climber_id,
-            })
+            }
+
+            if res["completed"]:
+                self.completed_evaluations[state] = res["score"]
+            else:
+                self.partial_evaluations[state] = observation
+
+            self.history.append(observation)
             if res["max_fold_score"] > self._observed_max_fold_score:
                 self._observed_max_fold_score = res["max_fold_score"]
             for k, pm in res["partial_means"].items():
                 self._partial_mean_history.setdefault(k, []).append(pm)
 
-            results[climber_id] = (state, res["score"])
+            results[climber_id] = (state, res["score"], res["completed"])
 
         return results
 
     def _update_climbers(self, results):
-        """Update each climber from its new score; return climbers that stagnated."""
+        """Update climbers; only full-CV results can update confirmed fitness."""
         stagnated = []
-        for climber_id, (state, score) in results.items():
+        for climber_id, (state, score, completed) in results.items():
             climber = self._climber_by_id[climber_id]
             climber.steps_taken += 1
-            climber.current_state = state
 
-            if score > climber.current_score:
-                climber.current_score = score
-                climber.stagnation_count = 0
+            if completed:
+                climber.current_state = state
+                if score > climber.current_score:
+                    climber.current_score = score
+                    climber.stagnation_count = 0
+                else:
+                    climber.stagnation_count += 1
             else:
+                # A pruned partial observation is evidence that the proposal was
+                # visited, but it is not a confirmed objective value or location.
                 climber.stagnation_count += 1
 
             if climber.stagnation_count >= self.climber_patience:
@@ -673,7 +715,7 @@ class AdaptiveGreedySearch:
 
         exclude = {c.current_state for c in self.climbers}
         for _ in retired:
-            if len(self.evaluated) >= self.max_evaluations:
+            if len(self.visited_states) >= self.max_evaluations:
                 break
             new_climber = self._spawn_climber(exclude)
             if new_climber is None:
@@ -696,7 +738,10 @@ class AdaptiveGreedySearch:
             tpe_bandwidth=self.tpe_bandwidth,
             random_state=self.random_state,
         )
-        self.evaluated = {}
+        self.visited_states = set()
+        self.partial_evaluations = {}
+        self.completed_evaluations = {}
+        self.evaluated = self.completed_evaluations
         self.history = []
         self._partial_mean_history = {}
         self._observed_max_fold_score = -np.inf
@@ -726,14 +771,14 @@ class AdaptiveGreedySearch:
         with Parallel(n_jobs=self.n_jobs) as parallel:
 
             while (
-                len(self.evaluated) < budget
+                len(self.visited_states) < budget
                 and any(c.status == "active" for c in self.climbers)
             ):
                 # 1 + 2. propose and deduplicate
                 proposals, retired_in_proposal = self._propose()
 
                 # never exceed the evaluation budget within a batch
-                remaining_budget = budget - len(self.evaluated)
+                remaining_budget = budget - len(self.visited_states)
                 if len(proposals) > remaining_budget:
                     proposals = dict(list(proposals.items())[:remaining_budget])
 
@@ -743,7 +788,9 @@ class AdaptiveGreedySearch:
                     results = self.evaluate_batch(proposals, X, y, parallel)
 
                     # optional global early stopping (off by default)
-                    for _, (_, score) in results.items():
+                    for _, (_, score, completed) in results.items():
+                        if not completed:
+                            continue
                         if score > best_so_far:
                             best_so_far = score
                             evals_since_improvement = 0
@@ -753,7 +800,7 @@ class AdaptiveGreedySearch:
                     # 4. update climbers
                     retired_after_eval = self._update_climbers(results)
 
-                if len(self.evaluated) >= 3:
+                if len(self.completed_evaluations) >= 3:
                     self.fit_surrogate()
 
                 # 4. respawn replacements for everyone retired this round
@@ -769,11 +816,22 @@ class AdaptiveGreedySearch:
                 if not proposals and not any(c.status == "active" for c in self.climbers):
                     break
 
-        best_state = max(self.evaluated, key=self.evaluated.get)
+        if not self.completed_evaluations:
+            raise RuntimeError(
+                "AGS finished without any full-CV evaluation. "
+                "A final result cannot be selected from partial observations."
+            )
+
+        best_state = max(
+            self.completed_evaluations,
+            key=self.completed_evaluations.get,
+        )
         self.best_state = best_state
-        self.best_score = self.evaluated[best_state]
+        self.best_score = self.completed_evaluations[best_state]
         self.best_params = self.state_to_params(best_state)
-        self.n_evaluations = len(self.evaluated)
+        self.n_evaluations = len(self.visited_states)
+        self.n_completed_evaluations = len(self.completed_evaluations)
+        self.n_partial_evaluations = len(self.partial_evaluations)
         self.total_time = time.perf_counter() - total_start
 
         self.n_pruned = sum(1 for h in self.history if h["pruned"])
