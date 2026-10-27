@@ -1,62 +1,103 @@
 # Adaptive Greedy Search (AGS)
 
-**Adaptive Greedy Search (AGS) v3.6.0** is a surrogate-assisted, multi-start adaptive local-search optimizer for finite discrete hyperparameter spaces.
+**Adaptive Greedy Search (AGS) v3.7.0** is a surrogate-assisted, multi-start adaptive local-search optimizer for finite hyperparameter spaces.
 
-It combines typed search-space geometry, a shared RF/GP/KDE surrogate, adaptive trust-region climbers, fold-level multi-fidelity racing, and diversity-aware batch/restart logic.
+AGS combines typed and conditional search-space geometry, RF/GP/KDE surrogate guidance, adaptive trust-region climbers, confidence-bound multi-fidelity racing, diversity-aware batch search, and **lazy candidate generation**.
 
 ```python
 from ags import AdaptiveGreedySearch
 ```
 
-## What's new in 3.6
+## What's new in 3.7
+
+### Conditional hyperparameters
+
+AGS can now represent parameters that are active only for selected values of an earlier parent parameter.
+
+```python
+from ags import (
+    AdaptiveGreedySearch,
+    CategoricalParameter,
+    ConditionalParameter,
+    IntegerParameter,
+    NumericParameter,
+)
+from sklearn.svm import SVC
+
+param_grid = {
+    "kernel": CategoricalParameter(["linear", "rbf", "poly"]),
+    "gamma": ConditionalParameter(
+        NumericParameter([0.001, 0.01, 0.1, 1.0], scale="log"),
+        parent="kernel",
+        active_values=["rbf", "poly"],
+    ),
+    "degree": ConditionalParameter(
+        IntegerParameter([2, 3, 4, 5]),
+        parent="kernel",
+        active_values=["poly"],
+    ),
+}
+
+search = AdaptiveGreedySearch(
+    SVC(),
+    param_grid,
+    max_evaluations=30,
+)
+```
+
+For a state with `kernel="linear"`, `gamma` and `degree` are inactive and are **not passed to the estimator**. For `kernel="rbf"`, `gamma` is active but `degree` is omitted. For `kernel="poly"`, both are active.
+
+Conditional parents must currently appear before their children in `param_grid` insertion order.
+
+### Lazy candidate generation
+
+AGS no longer constructs:
+
+```python
+list(itertools.product(...))
+```
+
+for the entire search space.
+
+Instead, global initialization, space-filling search, and restart logic operate on bounded candidate pools generated lazily:
+
+```python
+search = AdaptiveGreedySearch(
+    estimator,
+    param_grid,
+    candidate_pool_size=256,
+)
+```
+
+This changes memory growth from being directly tied to the full Cartesian-product size to being tied primarily to the candidate pool, visited observations, and local neighborhoods.
+
+`search.search_space_size_upper_bound` reports the raw Cartesian upper bound, while `search.lazy_search` indicates that the complete grid is not materialized.
+
+### Conditional-aware geometry and surrogate encoding
+
+Inactive dimensions use an internal inactive state and an explicit activity mask in surrogate features.
+
+Distance behaves as follows:
+
+- inactive in both states → no contribution;
+- active in one state but inactive in the other → activity mismatch penalty;
+- active in both → the wrapped parameter's normal numeric / ordinal / categorical distance.
+
+Local neighbors are canonicalized after parent changes, so the search does not intentionally propose invalid conditional configurations.
+
+## Earlier 3.x improvements
 
 ### v3.4 — Adaptive trust-region climbers
 
-Each climber now keeps separate current and historical-best state:
-
-- `current_state`, `current_score`
-- `personal_best_state`, `personal_best_score`
-- `trust_radius`
-
-Confirmed improvement expands the local region; failed or pruned proposals contract it.
-
-```python
-search = AdaptiveGreedySearch(
-    estimator,
-    param_grid,
-    initial_trust_radius=1.0,
-    min_trust_radius=1.0,
-    trust_expand=2.0,
-    trust_shrink=0.5,
-    max_neighbor_radius=4,
-)
-```
+Each climber tracks its current state separately from its personal best and adapts `trust_radius` after success or failure.
 
 ### v3.5 — Multi-fidelity confidence racing
 
-CV folds are treated as fidelity. In addition to `percentile`, `optimistic`, and `none`, AGS now supports:
-
-```python
-pruning_strategy="racing"
-racing_confidence=0.95
-```
-
-After enough folds, a statistically weak candidate can be stopped when its confidence upper bound falls below the confirmed incumbent. Racing is a statistical resource-allocation rule, **not a deterministic guarantee**. Partial observations still cannot become the winner or train the surrogate as full observations.
+`pruning_strategy="racing"` treats CV folds as fidelity and can stop statistically weak candidates before full CV.
 
 ### v3.6 — Diversity-aware batch search and restart
 
-Batch candidates are coordinated before evaluation. AGS adds a typed-distance diversity bonus to acquisition scores so parallel climbers are less likely to collapse into the same basin.
-
-Retired climbers are respawned using both predicted quality and distance from active search regions.
-
-```python
-search = AdaptiveGreedySearch(
-    estimator,
-    param_grid,
-    diversity_weight=0.25,
-    restart_diversity_weight=0.5,
-)
-```
+Parallel proposals and respawns balance model quality with typed-distance diversity.
 
 ## Installation
 
@@ -68,10 +109,14 @@ pip install adaptive-greedy-search
 
 ```python
 from ags import AdaptiveGreedySearch
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.datasets import make_classification
+from sklearn.ensemble import RandomForestClassifier
 
-X, y = make_classification(n_samples=500, n_features=20, random_state=0)
+X, y = make_classification(
+    n_samples=500,
+    n_features=20,
+    random_state=0,
+)
 
 param_grid = {
     "n_estimators": [50, 100, 150, 200],
@@ -90,35 +135,35 @@ search = AdaptiveGreedySearch(
     surrogate_type="rf",
     acquisition="auto",
     pruning_strategy="racing",
+    candidate_pool_size=256,
     random_state=42,
 )
 
 search.fit(X, y)
 
-print(search.best_params)
-print(search.best_score)
-print("evaluations:", search.n_evaluations)
-print("folds saved:", search.folds_saved)
-print("mean fidelity:", search.mean_fidelity)
-print("trust expansions:", search.trust_expansions)
-print("trust contractions:", search.trust_contractions)
+print("Best parameters:", search.best_params)
+print("Best CV score:", search.best_score)
+print("Evaluations:", search.n_evaluations)
+print("Folds saved:", search.folds_saved)
+print("Mean fidelity:", search.mean_fidelity)
 ```
 
-## Typed search spaces
+## Search-space API
 
-Plain lists still work. For explicit geometry:
+Plain Python lists remain supported.
 
-```python
-from ags import NumericParameter, OrdinalParameter, CategoricalParameter
+Explicit parameter types:
 
-param_grid = {
-    "C": NumericParameter([0.01, 0.1, 1, 10], scale="log"),
-    "depth": OrdinalParameter([2, 4, 6, 8]),
-    "kernel": CategoricalParameter(["linear", "rbf", "poly"]),
-}
-```
+| Type | Purpose |
+|---|---|
+| `NumericParameter` | Numeric values with linear or log geometry |
+| `FloatParameter` | Explicit real-valued finite grid |
+| `IntegerParameter` | Explicit integer finite grid |
+| `OrdinalParameter` | Ordered choices using rank distance |
+| `CategoricalParameter` | Nominal values using Hamming geometry |
+| `ConditionalParameter` | Wraps another parameter and activates it only for selected parent values |
 
-Numeric distance is normalized in value space, ordinal distance uses rank, and nominal categories use Hamming distance plus one-hot surrogate features.
+All values are still explicitly enumerated. AGS 3.7 does **not** turn these classes into continuous-domain optimizers.
 
 ## Surrogates and acquisitions
 
@@ -131,29 +176,37 @@ Numeric distance is normalized in value space, ordinal distance uses rank, and n
 
 Acquisition options are `auto`, `ucb`, `ei` / `expected_improvement`, and `density_ratio` where compatible.
 
-The surrogate is trained **only on complete CV evaluations** after the warm-up target is reached.
+Only **completed full-CV evaluations** are used as complete surrogate training targets.
 
 ## Pruning / racing
 
 | Strategy | Meaning |
 |---|---|
 | `percentile` | Heuristic comparison with historical partial means |
-| `optimistic` | Deterministic bound only when a valid `score_upper_bound` is supplied |
+| `optimistic` | Safe only with a valid explicit `score_upper_bound` |
 | `racing` | Confidence-bound statistical early stopping |
 | `none` | Full CV for every selected configuration |
 
-## Important result attributes
+Partial observations never become the reported winner.
 
+## Important 3.7 parameters and attributes
+
+- `candidate_pool_size=256`: maximum target size for lazily generated global candidate pools.
+- `search_space_size_upper_bound`: raw product-size upper bound.
+- `lazy_search`: `True` when using the structured lazy engine.
+- `has_conditional_parameters`: whether the configured search space contains conditionals.
 - `best_params`, `best_score`, `best_state`
 - `completed_evaluations`, `partial_evaluations`, `history`
-- `n_evaluations`, `n_completed_evaluations`, `n_partial_evaluations`
-- `n_pruned`, `folds_saved`, `mean_fidelity`
-- `trust_expansions`, `trust_contractions`, `plateau_escapes`
-- `climbers_spawned`, `climbers_merged`
+- `folds_saved`, `mean_fidelity`
+- `trust_expansions`, `trust_contractions`
+- `climbers_spawned`, `climbers_merged`, `plateau_escapes`
 
-## Limitations
+## Current limitations
 
-AGS still materializes the finite Cartesian product. Conditional spaces and lazy candidate generation are planned for v4.0. AGS is not exhaustive and does not guarantee the global optimum.
+- Search values are finite and explicitly listed.
+- Conditional dependencies are currently parent → child and the parent must appear earlier in the mapping.
+- Lazy candidate pools reduce full-grid memory pressure, but they do not guarantee exhaustive coverage of huge spaces.
+- AGS remains a heuristic optimizer and does not guarantee the global optimum.
 
 ## License
 
