@@ -3,36 +3,88 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
-  workflow_dispatch: {}   # lets you trigger it manually from the Actions tab too
+  workflow_run:
+    workflows: ["tests"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: {}
 
 permissions:
   contents: read
-  id-token: write   # required for PyPI Trusted Publishing (OIDC), no API token needed
+  id-token: write
 
 jobs:
   build:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
+    outputs:
+      should_publish: ${{ steps.version.outputs.should_publish }}
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the tested revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+      - name: Validate version and check PyPI
+        id: version
+        shell: bash
+        run: |
+          VERSION="$(python - <<'PY'
+          import tomllib
+          with open("pyproject.toml", "rb") as f:
+              print(tomllib.load(f)["project"]["version"])
+          PY
+          )"
+
+          INIT_VERSION="$(python - <<'PY'
+          import re
+          from pathlib import Path
+          text = Path("ags/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r'^__version__\s*=\s*["\x27]([^"\x27]+)["\x27]', text, re.MULTILINE)
+          if not match:
+              raise SystemExit("Could not find ags.__version__")
+          print(match.group(1))
+          PY
+          )"
+
+          if [ "$VERSION" != "$INIT_VERSION" ]; then
+            echo "Version mismatch: pyproject.toml=$VERSION, ags.__version__=$INIT_VERSION" >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if curl --fail --silent --show-error             "https://pypi.org/pypi/adaptive-greedy-search/$VERSION/json"             >/dev/null 2>&1; then
+            echo "adaptive-greedy-search $VERSION already exists on PyPI; skipping upload."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "adaptive-greedy-search $VERSION is not on PyPI; it will be published."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install build tool
+        if: steps.version.outputs.should_publish == 'true'
         run: python -m pip install --upgrade build
 
       - name: Build sdist and wheel
+        if: steps.version.outputs.should_publish == 'true'
         run: python -m build
 
       - name: Upload build artifacts
+        if: steps.version.outputs.should_publish == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: dist
+          name: dist-${{ steps.version.outputs.version }}
           path: dist/
 
   publish:
     needs: build
+    if: needs.build.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -41,7 +93,7 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: dist
+          name: dist-${{ needs.build.outputs.version }}
           path: dist/
 
       - name: Publish to PyPI
