@@ -8,8 +8,10 @@ use a configurable acquisition function after a configurable warm-up.
 
 
 import itertools
+import math
 import time
 import warnings
+from statistics import NormalDist
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -38,16 +40,24 @@ class Climber:
     """
     One search frontier in the swarm.
 
-    `current_score` is the best score this climber has achieved along
-    its whole path (a personal best), not necessarily the score at
-    `current_state`.
+    v3.4 keeps the score at the current position separate from the
+    climber's historical personal best and maintains an adaptive trust radius.
     """
     id: str
     current_state: Tuple[int, ...]
     current_score: float = NEG_INF
+    personal_best_state: Optional[Tuple[int, ...]] = None
+    personal_best_score: float = NEG_INF
+    trust_radius: float = 1.0
     steps_taken: int = 0
     stagnation_count: int = 0
+    successes: int = 0
+    failures: int = 0
     status: str = "active"   # "active" | "stagnated" | "merged"
+
+    def __post_init__(self):
+        if self.personal_best_state is None:
+            self.personal_best_state = self.current_state
 
 
 # ============================================================
@@ -79,6 +89,7 @@ def _evaluate_worker(
     score_upper_bound,
     observed_max_fold_score,
     partial_mean_history_snapshot,
+    racing_confidence,
 ):
     base_model = clone(estimator)
     base_model.set_params(**params)
@@ -95,6 +106,7 @@ def _evaluate_worker(
     local_observed_max = observed_max_fold_score
     new_partial_means = {}   # {fold_index: partial_mean} produced by THIS candidate
 
+    racing_z = NormalDist().inv_cdf(0.5 + racing_confidence / 2.0)
     start = time.perf_counter()
 
     for k, (train_idx, test_idx) in enumerate(cv_splits, start=1):
@@ -135,9 +147,6 @@ def _evaluate_worker(
                 break
 
         elif can_prune and pruning_strategy == "percentile":
-            # history = snapshot from BEFORE this batch (other candidates in
-            # the same batch run concurrently and cannot be seen), plus
-            # nothing from this candidate's own earlier folds at index k.
             hist = partial_mean_history_snapshot.get(k, [])
             if len(hist) >= min_history_for_percentile:
                 threshold = np.percentile(hist, pruning_percentile)
@@ -145,6 +154,18 @@ def _evaluate_worker(
                     pruned = True
                     prune_reason = "percentile_bound"
                     break
+
+        elif can_prune and pruning_strategy == "racing" and k >= 2:
+            # Statistical multi-fidelity racing. This is intentionally not
+            # described as a deterministic guarantee: repeated ordinary
+            # confidence bounds are a resource-allocation rule.
+            sample_std = float(np.std(fold_scores, ddof=1))
+            standard_error = sample_std / math.sqrt(k)
+            candidate_ucb = partial_mean + racing_z * standard_error
+            if candidate_ucb < incumbent - pruning_margin:
+                pruned = True
+                prune_reason = "confidence_racing"
+                break
 
     runtime = time.perf_counter() - start
     partial_mean = float(np.mean(fold_scores))
@@ -259,6 +280,13 @@ class AdaptiveGreedySearch:
         acquisition="auto",
         min_observations=None,
         rf_n_estimators=200,
+        initial_trust_radius=1.0,
+        min_trust_radius=1.0,
+        trust_expand=2.0,
+        trust_shrink=0.5,
+        racing_confidence=0.95,
+        diversity_weight=0.25,
+        restart_diversity_weight=0.5,
     ):
 
         if n_climbers is None:
@@ -267,6 +295,20 @@ class AdaptiveGreedySearch:
             raise ValueError("n_climbers must be >= 1.")
         if climber_patience < 1:
             raise ValueError("climber_patience must be >= 1.")
+        if max_neighbor_radius < 1:
+            raise ValueError("max_neighbor_radius must be >= 1.")
+        if initial_trust_radius <= 0 or min_trust_radius <= 0:
+            raise ValueError("Trust radii must be positive.")
+        if min_trust_radius > max_neighbor_radius:
+            raise ValueError("min_trust_radius cannot exceed max_neighbor_radius.")
+        if not (0 < trust_shrink <= 1):
+            raise ValueError("trust_shrink must be in (0, 1].")
+        if trust_expand < 1:
+            raise ValueError("trust_expand must be >= 1.")
+        if not (0 < racing_confidence < 1):
+            raise ValueError("racing_confidence must be between 0 and 1.")
+        if diversity_weight < 0 or restart_diversity_weight < 0:
+            raise ValueError("Diversity weights must be non-negative.")
 
         self.estimator = estimator
         self.param_grid = param_grid
@@ -297,6 +339,15 @@ class AdaptiveGreedySearch:
         self.tpe_bandwidth = tpe_bandwidth
         self.acquisition = acquisition
         self.rf_n_estimators = rf_n_estimators
+        self.initial_trust_radius = float(
+            np.clip(initial_trust_radius, min_trust_radius, max_neighbor_radius)
+        )
+        self.min_trust_radius = float(min_trust_radius)
+        self.trust_expand = float(trust_expand)
+        self.trust_shrink = float(trust_shrink)
+        self.racing_confidence = float(racing_confidence)
+        self.diversity_weight = float(diversity_weight)
+        self.restart_diversity_weight = float(restart_diversity_weight)
 
         valid_acquisitions = {
             "auto", "ucb", "ei", "expected_improvement", "density_ratio"
@@ -319,7 +370,12 @@ class AdaptiveGreedySearch:
                 "surrogate_type='rf'/'gp'."
             )
 
-        self.enable_pruning = enable_pruning
+        valid_pruning = {"optimistic", "percentile", "racing", "none"}
+        if pruning_strategy not in valid_pruning:
+            raise ValueError(
+                "pruning_strategy must be one of: optimistic, percentile, racing, none."
+            )
+        self.enable_pruning = bool(enable_pruning and pruning_strategy != "none")
         self.pruning_strategy = pruning_strategy
         self.pruning_margin = pruning_margin
         self.pruning_percentile = pruning_percentile
@@ -363,6 +419,9 @@ class AdaptiveGreedySearch:
         self.climbers_spawned = 0
         self.climbers_merged = 0
         self.plateau_escapes = 0
+        self.trust_expansions = 0
+        self.trust_contractions = 0
+        self.diversity_resolutions = 0
 
         # --- pruning bookkeeping ---
         self._partial_mean_history = {}       # {fold_index: [partial_means...]}
@@ -460,6 +519,28 @@ class AdaptiveGreedySearch:
 
     def get_neighbors(self, state):
         return self._semantic_neighbors(state, unvisited_only=True)
+
+    def _states_within_hops(self, start_state, radius, excluded=None):
+        """Return unvisited states inside a climber's semantic trust region."""
+        excluded = set(excluded or ())
+        hops = max(1, min(self.max_neighbor_radius, int(math.ceil(radius))))
+        seen = {start_state}
+        frontier = [start_state]
+        candidates = []
+        for _ in range(hops):
+            next_frontier = []
+            for state in frontier:
+                for neighbor in self._semantic_neighbors(state, unvisited_only=False):
+                    if neighbor in seen:
+                        continue
+                    seen.add(neighbor)
+                    next_frontier.append(neighbor)
+                    if neighbor not in self.visited_states and neighbor not in excluded:
+                        candidates.append(neighbor)
+            frontier = next_frontier
+            if not frontier:
+                break
+        return candidates
 
     # ========================================================
     # MAX-MIN (FARTHEST-POINT) SEEDING
@@ -577,8 +658,29 @@ class AdaptiveGreedySearch:
         if status == "merged":
             self.climbers_merged += 1
 
+    def _diversity_bonus(self, states, references):
+        if not references:
+            return np.ones(len(states), dtype=float)
+        raw = np.array([
+            min(self.distance(state, ref) for ref in references)
+            for state in states
+        ], dtype=float)
+        scale = max(float(len(self.parameters)), 1.0)
+        return raw / scale
+
+    def _select_model_candidate(self, candidates, references=None, weight=None):
+        scores = np.asarray(self.acquisition_scores(candidates), dtype=float)
+        references = list(references or ())
+        diversity_weight = self.diversity_weight if weight is None else float(weight)
+        if references and diversity_weight > 0:
+            scores = scores + diversity_weight * self._diversity_bonus(
+                candidates, references
+            )
+        best = np.flatnonzero(np.isclose(scores, np.max(scores)))
+        return candidates[int(self.rng.choice(best))]
+
     def _spawn_climber(self, exclude):
-        """Spawn a climber at the unvisited state with highest surrogate uncertainty."""
+        """Respawn using acquisition quality plus distance from active basins."""
         remaining = [
             s for s in self.all_states
             if s not in self.visited_states and s not in exclude
@@ -587,16 +689,22 @@ class AdaptiveGreedySearch:
             return None
 
         if self._surrogate_ready():
-            if hasattr(self.surrogate, "score_density_ratio"):
-                scores = self.acquisition_scores(remaining)
-                state = remaining[int(np.argmax(scores))]
-            else:
-                _, std = self.predict_uncertainty(remaining)
-                state = remaining[int(np.argmax(std))]
+            active_positions = [
+                c.current_state for c in self.climbers if c.status == "active"
+            ]
+            state = self._select_model_candidate(
+                remaining,
+                references=active_positions + list(exclude),
+                weight=self.restart_diversity_weight,
+            )
         else:
             state = self._get_space_filling_candidate(excluded=exclude)
 
-        climber = Climber(id=f"climber_{self._next_climber_idx}", current_state=state)
+        climber = Climber(
+            id=f"climber_{self._next_climber_idx}",
+            current_state=state,
+            trust_radius=self.initial_trust_radius,
+        )
         self._next_climber_idx += 1
         self.climbers_spawned += 1
         self._climber_by_id[climber.id] = climber
@@ -661,89 +769,71 @@ class AdaptiveGreedySearch:
             return None
 
         if self._surrogate_ready():
-            scores = self.acquisition_scores(candidates)
-            return candidates[int(np.argmax(scores))]
+            return self._select_model_candidate(
+                candidates, references=list(excluded or ())
+            )
         return candidates[int(self.rng.integers(len(candidates)))]
 
     def _propose(self):
-        """
-        Every active climber proposes one candidate state.
-
-        * A climber that has not been scored yet (fresh seed / respawn)
-          proposes its own start state.
-        * A scored climber proposes its best-UCB unevaluated radius-1
-          neighbor from the shared surrogate. If it has no unevaluated
-          neighbor left, it is boxed in and retired as "stagnated".
-
-        Deduplication: if two climbers propose the exact same state, the
-        LAGGING one (lower personal-best score; ties go to the later
-        climber) is retired as "merged" and its proposal is dropped, so
-        no state is ever evaluated twice.
-
-        Returns (proposals {climber_id: state}, retired_here [Climber]).
-        """
-        proposals = {}     # climber_id -> state
-        owner = {}         # state -> climber_id that currently holds the claim
+        """Create a coordinated diversity-aware batch inside adaptive trust regions."""
+        proposals = {}
         retired_here = []
-
-        have_surrogate = self._surrogate_ready()
-
-        def claim(climber, candidate):
-            rival_id = owner.get(candidate)
-            if rival_id is None:
-                proposals[climber.id] = candidate
-                owner[candidate] = climber.id
-                return
-
-            rival = self._climber_by_id[rival_id]
-            if climber.current_score > rival.current_score:
-                # the newcomer leads: the earlier claimant is the laggard
-                proposals.pop(rival_id, None)
-                proposals[climber.id] = candidate
-                owner[candidate] = climber.id
-                lagging = rival
-            else:
-                lagging = climber
-            self._retire(lagging, "merged")
-            retired_here.append(lagging)
+        selected = []
 
         active = [c for c in self.climbers if c.status == "active"]
         fresh = [c for c in active if c.current_score == NEG_INF]
         scored = [c for c in active if c.current_score != NEG_INF]
 
         for climber in fresh:
-            if climber.current_state in self.visited_states:
-                self._retire(climber, "merged")     # start state already visited
+            if (
+                climber.current_state in self.visited_states
+                or climber.current_state in selected
+            ):
+                self._retire(climber, "merged")
                 retired_here.append(climber)
                 continue
-            claim(climber, climber.current_state)
+            proposals[climber.id] = climber.current_state
+            selected.append(climber.current_state)
 
+        anchors = [c.current_state for c in active]
         for climber in scored:
-            neighbors = self.get_neighbors(climber.current_state)
-            if not neighbors:
-                # boxed in: try a bounded ring-expansion jump before giving up
-                jump = self._resolve_plateau(climber.current_state, excluded=set(owner))
+            candidates = self._states_within_hops(
+                climber.current_state,
+                climber.trust_radius,
+                excluded=set(selected),
+            )
+            if not candidates:
+                jump = self._resolve_plateau(
+                    climber.current_state, excluded=set(selected)
+                )
                 if jump is None:
                     self._retire(climber, "stagnated")
                     retired_here.append(climber)
                     continue
                 self.plateau_escapes += 1
-                claim(climber, jump)
-                continue
+                candidates = [jump]
 
-            if have_surrogate:
-                scores = self.acquisition_scores(neighbors)
-                candidate = neighbors[int(np.argmax(scores))]
+            if self._surrogate_ready():
+                candidate = self._select_model_candidate(
+                    candidates, references=anchors + selected
+                )
             else:
-                # During warm-up, continue a space-filling design instead of
-                # treating a tiny sample as a reliable surrogate landscape.
-                candidate = self._get_space_filling_candidate(excluded=set(owner))
+                candidate = self._get_space_filling_candidate(
+                    excluded=set(selected)
+                )
                 if candidate is None:
                     self._retire(climber, "stagnated")
                     retired_here.append(climber)
                     continue
 
-            claim(climber, candidate)
+            if candidate in selected:
+                self.diversity_resolutions += 1
+                self._retire(climber, "merged")
+                retired_here.append(climber)
+                continue
+
+            proposals[climber.id] = candidate
+            selected.append(candidate)
 
         return proposals, retired_here
 
@@ -783,6 +873,7 @@ class AdaptiveGreedySearch:
                 self.score_upper_bound,
                 self._observed_max_fold_score,
                 history_snapshot,
+                self.racing_confidence,
             )
             for _, state in jobs
         )
@@ -826,23 +917,51 @@ class AdaptiveGreedySearch:
         return results
 
     def _update_climbers(self, results):
-        """Update climbers; only full-CV results can update confirmed fitness."""
+        """Update positions, personal bests, and v3.4 adaptive trust radii."""
         stagnated = []
         for climber_id, (state, score, completed) in results.items():
             climber = self._climber_by_id[climber_id]
             climber.steps_taken += 1
+            improved = completed and score > climber.personal_best_score
 
             if completed:
                 climber.current_state = state
-                if score > climber.current_score:
-                    climber.current_score = score
+                climber.current_score = score
+                if improved:
+                    climber.personal_best_state = state
+                    climber.personal_best_score = score
                     climber.stagnation_count = 0
+                    climber.successes += 1
+                    old_radius = climber.trust_radius
+                    climber.trust_radius = min(
+                        float(self.max_neighbor_radius),
+                        max(
+                            self.min_trust_radius,
+                            climber.trust_radius * self.trust_expand,
+                        ),
+                    )
+                    if climber.trust_radius > old_radius:
+                        self.trust_expansions += 1
                 else:
                     climber.stagnation_count += 1
+                    climber.failures += 1
+                    old_radius = climber.trust_radius
+                    climber.trust_radius = max(
+                        self.min_trust_radius,
+                        climber.trust_radius * self.trust_shrink,
+                    )
+                    if climber.trust_radius < old_radius:
+                        self.trust_contractions += 1
             else:
-                # A pruned partial observation is evidence that the proposal was
-                # visited, but it is not a confirmed objective value or location.
                 climber.stagnation_count += 1
+                climber.failures += 1
+                old_radius = climber.trust_radius
+                climber.trust_radius = max(
+                    self.min_trust_radius,
+                    climber.trust_radius * self.trust_shrink,
+                )
+                if climber.trust_radius < old_radius:
+                    self.trust_contractions += 1
 
             if climber.stagnation_count >= self.climber_patience:
                 self._retire(climber, "stagnated")
@@ -891,6 +1010,9 @@ class AdaptiveGreedySearch:
         self.climbers_spawned = 0
         self.climbers_merged = 0
         self.plateau_escapes = 0
+        self.trust_expansions = 0
+        self.trust_contractions = 0
+        self.diversity_resolutions = 0
 
         # cv splits computed once; workers receive the index arrays
         self._cv_splits = list(self._cv_splitter.split(X, y))
@@ -899,7 +1021,11 @@ class AdaptiveGreedySearch:
         n_seeds = min(self.n_climbers, self.max_evaluations, len(self.all_states))
         seeds = self._get_max_min_seeds(n_seeds)
         self.climbers = [
-            Climber(id=f"climber_{i}", current_state=s)
+            Climber(
+                id=f"climber_{i}",
+                current_state=s,
+                trust_radius=self.initial_trust_radius,
+            )
             for i, s in enumerate(seeds)
         ]
         self._climber_by_id = {c.id: c for c in self.climbers}
@@ -986,5 +1112,8 @@ class AdaptiveGreedySearch:
         self.total_folds_run = sum(h["n_folds_used"] for h in self.history)
         self.total_folds_possible = sum(h["n_folds_total"] for h in self.history)
         self.folds_saved = self.total_folds_possible - self.total_folds_run
+        self.mean_fidelity = float(np.mean([
+            h["fidelity"] for h in self.history
+        ])) if self.history else 0.0
 
         return self
