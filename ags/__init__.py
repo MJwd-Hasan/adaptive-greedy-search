@@ -1,13 +1,10 @@
 """
 AGS -- Adaptive Greedy Search
 
-Surrogate-guided hyperparameter search over a discrete grid: a swarm of
-independent greedy climbers (Max-Min seeded, dispatched in parallel via
-joblib) sharing one TPE (or GP) surrogate, one global evaluation cache,
-and one fold-level pruning engine. Boxed-in climbers escape local
-plateaus by ring expansion before retiring; retired climbers are
-replaced at the highest-uncertainty unvisited state while budget
-remains.
+Surrogate-assisted hyperparameter search over finite discrete spaces.
+AGS combines typed geometry, RF/GP/KDE surrogate guidance, adaptive
+trust-region climbers, confidence-bound multi-fidelity racing, and
+diversity-aware batch selection and restart.
 
     from ags import AdaptiveGreedySearch
 
@@ -35,4 +32,4 @@ __all__ = [
     "OrdinalParameter",
     "CategoricalParameter",
 ]
-__version__ = "3.3.0"
+__version__ = "3.6.0"
