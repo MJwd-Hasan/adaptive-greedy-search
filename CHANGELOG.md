@@ -1,25 +1,44 @@
 # Changelog
 
-## v3.3.0 — Principled Surrogate and Acquisition
+## v3.6.0 — Diversity-Aware Batch Search and Adaptive Restart
 
 ### Added
-- Random Forest regression surrogate as the default for mixed/discrete search spaces.
-- Separate acquisition functions: UCB and Expected Improvement, alongside automatic selection.
-- A configurable surrogate warm-up target before model-guided proposals are enabled.
-- Space-filling candidate selection during warm-up.
-- KDE density-ratio scoring as an explicitly named alternative surrogate.
-- Regression tests for surrogate outputs, acquisition scores, warm-up behavior, and end-to-end searches.
+- Diversity-aware acquisition scoring for coordinated parallel proposals.
+- Quality/diversity-aware climber respawning using typed search-space distance.
+- `diversity_weight` and `restart_diversity_weight`.
+- Run diagnostics for trust-region expansion/contraction and mean fidelity.
+- Regression tests covering v3.4, v3.5, and v3.6 behavior.
 
 ### Changed
-- Acquisition logic is now separated from surrogate implementations.
-- Random Forest between-tree dispersion is documented as an uncertainty proxy, not a calibrated posterior standard deviation.
-- GP remains available for posterior mean/std and GP-based Expected Improvement.
-- The previous TPE-like implementation is no longer presented as a full Tree-structured Parzen Estimator. Use `surrogate_type="kde"`; `surrogate_type="tpe"` remains a deprecated compatibility alias.
-- The default surrogate changed from the legacy KDE density-ratio model to Random Forest.
+- Duplicate avoidance is now proactive during batch construction rather than relying primarily on post-proposal collision handling.
+- Restart selection is no longer pure uncertainty; it balances model quality and distance from active basins.
 
-### Compatibility
-- Existing plain-list parameter grids and the v3.1/v3.2 evaluation semantics remain supported.
-- New constructor options: `acquisition`, `min_observations`, and `rf_n_estimators`.
+## v3.5.0 — Principled Multi-Fidelity Racing
 
-### Validation
-- CI runs the pytest suite on Python 3.10 and 3.12.
+### Added
+- `pruning_strategy="racing"` using confidence-bound fold racing.
+- `racing_confidence` configuration.
+- Explicit fidelity accounting through fold counts and `mean_fidelity`.
+
+### Correctness
+- Partial/raced observations remain separate from full-CV observations.
+- Only completed evaluations can become the incumbent, winner, or surrogate training targets.
+- Racing is documented as statistical resource allocation rather than a deterministic preservation guarantee.
+
+## v3.4.0 — Adaptive Trust-Region Climbers
+
+### Added
+- Per-climber adaptive `trust_radius`.
+- Separate current state/score and historical personal-best state/score.
+- Trust-region expansion after confirmed improvement and contraction after failure.
+- `initial_trust_radius`, `min_trust_radius`, `trust_expand`, and `trust_shrink`.
+
+### Changed
+- Fixed-radius plateau traversal is now a bounded fallback; adaptive trust regions are the primary local exploitation mechanism.
+
+## v3.3.0 — Principled Surrogate and Acquisition
+
+- Random Forest regression surrogate as the mixed/discrete default.
+- Separate UCB / Expected Improvement acquisition logic.
+- Explicit surrogate warm-up and space-filling proposals.
+- KDE density-ratio alternative; legacy `tpe` retained only as a deprecated alias.
