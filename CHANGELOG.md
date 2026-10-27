@@ -1,44 +1,43 @@
 # Changelog
 
-## v3.6.0 — Diversity-Aware Batch Search and Adaptive Restart
+## v3.7.0 — Conditional Spaces and Lazy Candidate Generation
 
 ### Added
-- Diversity-aware acquisition scoring for coordinated parallel proposals.
-- Quality/diversity-aware climber respawning using typed search-space distance.
-- `diversity_weight` and `restart_diversity_weight`.
-- Run diagnostics for trust-region expansion/contraction and mean fidelity.
-- Regression tests covering v3.4, v3.5, and v3.6 behavior.
+- `ConditionalParameter` for parent-dependent hyperparameters.
+- Explicit `FloatParameter` and `IntegerParameter` types.
+- `StructuredSearchSpace` with conditional-aware state validation, encoding, distance, neighborhoods, iteration, and sampling.
+- Lazy bounded candidate pools controlled by `candidate_pool_size`.
+- Explicit conditional activity masks in surrogate feature encoding.
+- `search_space_size_upper_bound`, `lazy_search`, and `has_conditional_parameters` diagnostics.
+- Regression tests for conditional state validity, inactive-parameter omission, stable encoding, huge-space construction, lazy iteration, and end-to-end conditional search.
 
 ### Changed
-- Duplicate avoidance is now proactive during batch construction rather than relying primarily on post-proposal collision handling.
-- Restart selection is no longer pure uncertainty; it balances model quality and distance from active basins.
+- AGS no longer materializes the complete Cartesian product with `list(itertools.product(...))`.
+- Max-Min initialization now works over a lazily generated bounded candidate pool.
+- Global space-filling proposals and respawns draw from lazy candidate pools.
+- Local neighborhoods canonicalize conditional children when a parent changes.
+- Inactive conditional parameters are omitted before estimator `set_params`.
+- Conditional dimensions contribute an activity mask to surrogate features and conditional-aware distance.
+
+### Compatibility
+- Existing plain-list grids remain supported.
+- Existing Numeric / Ordinal / Categorical parameter APIs remain supported.
+- v3.1-v3.6 evaluation semantics, surrogates, acquisitions, trust regions, racing, and diversity-aware search remain available.
+
+## v3.6.0 — Diversity-Aware Batch Search and Adaptive Restart
+
+- Coordinated diversity-aware batch proposals.
+- Quality/diversity-aware respawning.
+- Adaptive trust-region and fidelity diagnostics.
 
 ## v3.5.0 — Principled Multi-Fidelity Racing
 
-### Added
-- `pruning_strategy="racing"` using confidence-bound fold racing.
-- `racing_confidence` configuration.
-- Explicit fidelity accounting through fold counts and `mean_fidelity`.
-
-### Correctness
-- Partial/raced observations remain separate from full-CV observations.
-- Only completed evaluations can become the incumbent, winner, or surrogate training targets.
-- Racing is documented as statistical resource allocation rather than a deterministic preservation guarantee.
+- Confidence-bound fold racing and explicit fidelity accounting.
 
 ## v3.4.0 — Adaptive Trust-Region Climbers
 
-### Added
-- Per-climber adaptive `trust_radius`.
-- Separate current state/score and historical personal-best state/score.
-- Trust-region expansion after confirmed improvement and contraction after failure.
-- `initial_trust_radius`, `min_trust_radius`, `trust_expand`, and `trust_shrink`.
-
-### Changed
-- Fixed-radius plateau traversal is now a bounded fallback; adaptive trust regions are the primary local exploitation mechanism.
+- Per-climber adaptive trust regions and separate current/personal-best state.
 
 ## v3.3.0 — Principled Surrogate and Acquisition
 
-- Random Forest regression surrogate as the mixed/discrete default.
-- Separate UCB / Expected Improvement acquisition logic.
-- Explicit surrogate warm-up and space-filling proposals.
-- KDE density-ratio alternative; legacy `tpe` retained only as a deprecated alias.
+- Random Forest default surrogate, explicit acquisitions, warm-up, and KDE density-ratio mode.
