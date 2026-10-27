@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "adaptive-greedy-search"
-version = "3.2.0"
+version = "3.3.0"
 description = "AGS (Adaptive Greedy Search): a surrogate-guided, multi-climber swarm search over discrete hyperparameter grids, with plateau escape and pruned cross-validation."
 readme = "README.md"
 license = {text = "MIT"}
@@ -12,7 +12,7 @@ authors = [
     {name = "Mohammad Jawad Hasan"}
 ]
 requires-python = ">=3.8"
-keywords = ["hyperparameter-optimization", "machine-learning", "scikit-learn", "AutoML", "TPE"]
+keywords = ["hyperparameter-optimization", "machine-learning", "scikit-learn", "AutoML", "Random Forest", "Bayesian optimization"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
