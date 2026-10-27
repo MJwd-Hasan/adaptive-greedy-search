@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "adaptive-greedy-search"
-version = "3.0.0"
+version = "3.1.0"
 description = "AGS (Adaptive Greedy Search): a surrogate-guided, multi-climber swarm search over discrete hyperparameter grids, with plateau escape and pruned cross-validation."
 readme = "README.md"
 license = {text = "MIT"}
@@ -27,8 +27,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/YOUR_GITHUB_USERNAME/adaptive-greedy-search"
-Repository = "https://github.com/YOUR_GITHUB_USERNAME/adaptive-greedy-search"
+Homepage = "https://github.com/MJwd-Hasan/adaptive-greedy-search"
+Repository = "https://github.com/MJwd-Hasan/adaptive-greedy-search"
 
 [tool.setuptools]
 packages = ["ags"]
