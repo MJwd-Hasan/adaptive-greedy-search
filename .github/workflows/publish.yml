@@ -1,10 +1,8 @@
 name: Publish to PyPI
 
 on:
-  release:
-    types: [published]
   workflow_run:
-    workflows: ["tests"]
+    workflows: ["Publish release"]
     types: [completed]
     branches: [main]
   workflow_dispatch: {}
@@ -21,16 +19,16 @@ jobs:
       should_publish: ${{ steps.version.outputs.should_publish }}
       version: ${{ steps.version.outputs.version }}
     steps:
-      - name: Check out the tested revision
+      - name: Check out current main
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+          ref: main
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Validate version and check PyPI
+      - name: Validate released version and PyPI state
         id: version
         shell: bash
         run: |
@@ -40,30 +38,25 @@ jobs:
               print(tomllib.load(f)["project"]["version"])
           PY
           )"
-
           INIT_VERSION="$(python - <<'PY'
           import re
           from pathlib import Path
           text = Path("ags/__init__.py").read_text(encoding="utf-8")
-          match = re.search(r'^__version__\s*=\s*["\x27]([^"\x27]+)["\x27]', text, re.MULTILINE)
-          if not match:
-              raise SystemExit("Could not find ags.__version__")
-          print(match.group(1))
+          print(re.search(r'^__version__\s*=\s*["\x27]([^"\x27]+)', text, re.M).group(1))
           PY
           )"
-
-          if [ "$VERSION" != "$INIT_VERSION" ]; then
-            echo "Version mismatch: pyproject.toml=$VERSION, ags.__version__=$INIT_VERSION" >&2
-            exit 1
-          fi
-
+          test "$VERSION" = "$INIT_VERSION" || { echo "Version mismatch"; exit 1; }
+          git fetch --tags --force
+          git rev-parse "v$VERSION" >/dev/null 2>&1 || {
+            echo "No GitHub release tag v$VERSION; refusing PyPI publish."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-          if curl --fail --silent --show-error             "https://pypi.org/pypi/adaptive-greedy-search/$VERSION/json"             >/dev/null 2>&1; then
-            echo "adaptive-greedy-search $VERSION already exists on PyPI; skipping upload."
+          if curl --fail --silent "https://pypi.org/pypi/adaptive-greedy-search/$VERSION/json" >/dev/null; then
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
           else
-            echo "adaptive-greedy-search $VERSION is not on PyPI; it will be published."
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -90,11 +83,9 @@ jobs:
       name: pypi
       url: https://pypi.org/project/adaptive-greedy-search/
     steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: dist-${{ needs.build.outputs.version }}
           path: dist/
-
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
