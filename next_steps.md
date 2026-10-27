@@ -1005,6 +1005,8 @@ This value should later be benchmarked.
 
 # Version 3.4 — Adaptive Trust-Region Climbers
 
+**Status: Implemented in v3.6.0.**
+
 ## Objective
 
 Replace fixed neighborhood-radius logic with adaptive local search regions.
@@ -1071,6 +1073,8 @@ A bounded fallback search may remain only as a recovery mechanism.
 
 # Version 3.5 — Principled Multi-Fidelity Racing
 
+**Status: Implemented in v3.6.0 via confidence-bound fold racing.**
+
 ## Objective
 
 Replace ad-hoc pruning with explicit resource allocation.
@@ -1121,6 +1125,8 @@ Record:
 ---
 
 # Version 3.6 — Diversity-Aware Batch Search and Adaptive Restart
+
+**Status: Implemented and released as v3.6.0.**
 
 ## Objective
 
