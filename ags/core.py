@@ -20,6 +20,7 @@ from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.metrics import get_scorer
 
 from .surrogates import make_surrogate
+from .search_space import infer_parameter
 from .utils import safe_index
 
 
@@ -293,7 +294,8 @@ class AdaptiveGreedySearch:
         self.rng = np.random.default_rng(random_state)
 
         self.parameter_names = list(param_grid.keys())
-        self.values = [list(param_grid[p]) for p in self.parameter_names]
+        self.parameters = [infer_parameter(param_grid[p]) for p in self.parameter_names]
+        self.values = [list(parameter.values) for parameter in self.parameters]
         self.all_states = list(
             itertools.product(*[range(len(v)) for v in self.values])
         )
@@ -372,20 +374,46 @@ class AdaptiveGreedySearch:
             for j, p in enumerate(self.parameter_names)
         }
 
+    def state_to_features(self, state):
+        """
+        Encode a state using parameter semantics.
+
+        Numeric dimensions become normalized numeric values, ordinal
+        dimensions become normalized ranks, and categorical dimensions
+        become one-hot vectors. This prevents nominal categories from
+        acquiring an artificial index ordering inside the surrogate.
+        """
+        features = []
+        for parameter, index in zip(self.parameters, state):
+            features.extend(parameter.encode(index))
+        return features
+
     def distance(self, a, b):
-        return sum(abs(x - y) for x, y in zip(a, b))
+        """Typed mixed-space distance used by all distance-aware search logic."""
+        return float(sum(
+            parameter.distance(left, right)
+            for parameter, left, right in zip(self.parameters, a, b)
+        ))
+
+    def _semantic_neighbors(self, state, unvisited_only=True):
+        """
+        Generate one-parameter semantic moves.
+
+        Numeric and ordinal dimensions move to adjacent ordered values.
+        Categorical dimensions may move to any other category.
+        """
+        neighbors = []
+        for i, parameter in enumerate(self.parameters):
+            for new_index in parameter.neighbor_indices(state[i]):
+                new_state = list(state)
+                new_state[i] = new_index
+                new_state = tuple(new_state)
+                if not unvisited_only or new_state not in self.visited_states:
+                    neighbors.append(new_state)
+        return neighbors
 
     def get_neighbors(self, state):
-        neighbors = []
-        for i in range(len(state)):
-            for step in (-1, 1):
-                new_state = list(state)
-                new_state[i] += step
-                if 0 <= new_state[i] < len(self.values[i]):
-                    new_state = tuple(new_state)
-                    if new_state not in self.visited_states:
-                        neighbors.append(new_state)
-        return neighbors
+        return self._semantic_neighbors(state, unvisited_only=True)
 
     # ========================================================
     # MAX-MIN (FARTHEST-POINT) SEEDING
@@ -394,9 +422,9 @@ class AdaptiveGreedySearch:
     def _get_max_min_seeds(self, n_seeds):
         """
         Greedy farthest-point sampling on the grid: start from one random
-        state, then repeatedly add the state whose minimum Manhattan
+        state, then repeatedly add the state whose minimum typed mixed-space
         distance to all already-chosen seeds is largest. Seeds therefore
-        land in maximally different regions of the hyperparameter space.
+        land in semantically different regions of the hyperparameter space.
         """
         states = self.all_states
         n = len(states)
@@ -426,12 +454,18 @@ class AdaptiveGreedySearch:
 
     def fit_surrogate(self):
         """Fit only on full-CV observations; partial scores are not objective labels."""
-        X_train = np.array(list(self.completed_evaluations.keys()), dtype=float)
+        X_train = np.array(
+            [self.state_to_features(state) for state in self.completed_evaluations],
+            dtype=float,
+        )
         y_train = np.array(list(self.completed_evaluations.values()), dtype=float)
         self.surrogate.fit(X_train, y_train)
 
     def predict_uncertainty(self, states):
-        states_array = np.array(states, dtype=float)
+        states_array = np.array(
+            [self.state_to_features(state) for state in states],
+            dtype=float,
+        )
         mean, std = self.surrogate.predict(states_array, return_std=True)
         return mean, std
 
@@ -489,7 +523,7 @@ class AdaptiveGreedySearch:
         Local plateau escape for a boxed-in climber.
 
         Breadth-first search outward from `start_state` ring by ring
-        (Manhattan distance 2, 3, ... up to `max_neighbor_radius`),
+        (semantic graph distance 2, 3, ... up to `max_neighbor_radius`),
         walking THROUGH already-evaluated states. Stops at the first ring
         that contains an unevaluated, unclaimed state and returns the
         candidate in that ring with the best surrogate UCB (random if the
@@ -505,18 +539,13 @@ class AdaptiveGreedySearch:
         for _ in range(self.max_neighbor_radius):
             next_frontier = []
             for state in frontier:
-                for i in range(len(state)):
-                    for step in (-1, 1):
-                        new_state = list(state)
-                        new_state[i] += step
-                        if 0 <= new_state[i] < len(self.values[i]):
-                            new_state = tuple(new_state)
-                            if new_state in visited:
-                                continue
-                            visited.add(new_state)
-                            next_frontier.append(new_state)
-                            if new_state not in self.visited_states and new_state not in excluded:
-                                candidates.append(new_state)
+                for new_state in self._semantic_neighbors(state, unvisited_only=False):
+                    if new_state in visited:
+                        continue
+                    visited.add(new_state)
+                    next_frontier.append(new_state)
+                    if new_state not in self.visited_states and new_state not in excluded:
+                        candidates.append(new_state)
             frontier = next_frontier
             if candidates or not frontier:
                 break
