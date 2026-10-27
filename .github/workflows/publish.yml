@@ -11,6 +11,10 @@ permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: pypi-publish
+  cancel-in-progress: false
+
 jobs:
   build:
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
@@ -89,3 +93,5 @@ jobs:
           path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
