@@ -13,17 +13,18 @@ from ags import AdaptiveGreedySearch
 `GridSearchCV` evaluates every combination — correct, but wasteful once
 the grid gets large. `RandomizedSearchCV` is cheap but has no memory:
 it never uses what it already learned from earlier trials to pick the
-next one. Bayesian approaches like Optuna's TPE fix that by modeling
-which regions of the space look promising, but a general-purpose
-sampler still spends full cross-validation budget on every trial, good
-or bad, and searches from a single point of view.
+next one. Bayesian approaches such as TPE model which regions of a space look
+promising, but a general-purpose sampler may still spend full
+cross-validation budget on every trial and does not use AGS's swarm
+of local search agents.
 
 AGS combines these ideas for the specific case of a **discrete**
 hyperparameter grid:
 
-- **A shared surrogate model** (TPE by default, or a Gaussian Process)
-  learns from every evaluated point — across the whole swarm, not just
-  one climber's path — which regions of the grid look promising.
+- **A shared surrogate model** (Random Forest by default, or a Gaussian Process)
+  learns from complete CV evaluations across the whole swarm. The Random
+  Forest uses between-tree dispersion as an exploration signal; this is
+  not a calibrated posterior standard deviation.
 - **A swarm of climbers, not one.** `n_climbers` climbers are seeded at
   maximally distant starting points on the grid (Max-Min / farthest-point
   sampling) and search concurrently. Each step, every active climber
@@ -115,20 +116,50 @@ print(f"climbers spawned: {search.climbers_spawned}, merged: {search.climbers_me
 | `climber_patience` | `3` | Consecutive non-improving steps before a climber is retired as `"stagnated"`. |
 | `n_jobs` | `-1` | Passed to `joblib.Parallel` for the per-round batched evaluation dispatch. |
 | `max_evaluations` | `25` | Hard cap on the number of grid points evaluated, across the whole swarm. |
-| `surrogate_type` | `"tpe"` | `"tpe"` (Tree-structured Parzen Estimator, cheap to refit) or `"gp"` (Gaussian Process, better calibrated uncertainty but costlier as evaluations grow). |
-| `pruning_strategy` | `"percentile"` | `"percentile"` (aggressive), `"optimistic"` (safe -- only prunes when a candidate is *mathematically* unable to beat the current best), or `"none"` (exhaustive CV, no pruning). |
+| `surrogate_type` | `"rf"` | `"rf"` (Random Forest; mixed-space default; tree-to-tree dispersion is an uncertainty proxy), `"gp"` (Gaussian Process; posterior mean/std), or `"kde"` (KDE density-ratio ranking). `"tpe"` remains a deprecated alias for `"kde"`, not a full TPE implementation. |
+| `pruning_strategy` | `"percentile"` | `"percentile"` (heuristic), `"optimistic"` (only safe when `score_upper_bound` is a valid upper bound for the scorer), or `"none"` (full CV, no pruning). |
 | `pruning_percentile` | `25` | Lower = stricter pruning (fewer candidates survive) when using `"percentile"`. |
 | `max_neighbor_radius` | `4` | How many rings outward a boxed-in climber's plateau escape is allowed to search before it's retired. `0` disables the escape entirely. |
 | `early_stopping_patience` | `None` | Optional *global* stop if the swarm's best score hasn't improved for this many evaluations. Per-climber `climber_patience` is the main stagnation mechanism; this is an extra, off-by-default cap on top. |
 
+## Surrogate and acquisition selection
+
+AGS v3.3 defaults to a Random Forest surrogate and a UCB acquisition.
+Choose `acquisition="ei"` or `acquisition="expected_improvement"` for
+Expected Improvement. With GP, EI uses the GP predictive distribution;
+with Random Forest, it is an approximation based on between-tree
+dispersion rather than calibrated posterior uncertainty.
+
+The legacy KDE density-ratio model can be used with
+`surrogate_type="kde"` and `acquisition="auto"` (or
+`acquisition="density_ratio"`). It is deliberately not exposed as a
+predictive mean/std model. The old `surrogate_type="tpe"` name is a
+deprecated compatibility alias.
+
+By default the surrogate is not activated until at least
+`max(2 * number_of_parameters, 10)` complete evaluations have been
+collected, capped by the finite grid size. Override this using
+`min_observations`. Before that threshold, AGS uses a space-filling
+warm-up rather than relying on a tiny, unstable surrogate fit.
+
+```python
+search = AdaptiveGreedySearch(
+    estimator,
+    param_grid,
+    surrogate_type="rf",
+    acquisition="ei",
+    min_observations=12,
+)
+```
+
 ## Choosing a pruning strategy
 
-- Want speed and can tolerate a small chance of pruning a candidate
-  that might have recovered? Use the default `"percentile"`.
-- Want a guarantee that pruning never changes the final answer versus
-  running exhaustively? Use `"optimistic"`.
+- Want speed and can tolerate heuristic pruning? Use the default
+  `"percentile"`.
+- Use `"optimistic"` only when supplying a valid `score_upper_bound`
+  for the scorer, e.g. `score_upper_bound=1.0` for accuracy.
 - Establishing a baseline, or debugging unexpected results? Use
-  `"none"` to fall back to plain exhaustive cross-validation.
+  `"none"` to run every fold for each selected configuration.
 
 ## A note on parallelism
 
