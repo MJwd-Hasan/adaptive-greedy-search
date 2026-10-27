@@ -19,7 +19,15 @@ from .surrogates import (
     TPESurrogate,
     build_gp_surrogate,
 )
-from .search_space import NumericParameter, OrdinalParameter, CategoricalParameter
+from .search_space import (
+    NumericParameter,
+    FloatParameter,
+    IntegerParameter,
+    OrdinalParameter,
+    CategoricalParameter,
+    ConditionalParameter,
+    StructuredSearchSpace,
+)
 
 __all__ = [
     "AdaptiveGreedySearch",
@@ -29,7 +37,11 @@ __all__ = [
     "TPESurrogate",
     "build_gp_surrogate",
     "NumericParameter",
+    "FloatParameter",
+    "IntegerParameter",
     "OrdinalParameter",
     "CategoricalParameter",
+    "ConditionalParameter",
+    "StructuredSearchSpace",
 ]
 __version__ = "3.6.0"
