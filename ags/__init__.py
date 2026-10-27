@@ -19,4 +19,4 @@ from .core import AdaptiveGreedySearch, Climber
 from .surrogates import TPESurrogate, build_gp_surrogate
 
 __all__ = ["AdaptiveGreedySearch", "Climber", "TPESurrogate", "build_gp_surrogate"]
-__version__ = "3.0.0"
+__version__ = "3.1.0"
