@@ -1,10 +1,11 @@
 """
-Core AdaptiveGreedySearch implementation (AGS v2 + Multi-Start Parallel Swarm).
+Core AdaptiveGreedySearch implementation.
 
-The single-climber search of AGS v2 is replaced by a swarm of
-`n_climbers` independent greedy climbers that share ONE surrogate model,
-ONE global evaluation cache, and ONE fold-level pruning engine.
+AGS uses a multi-start parallel swarm over a typed discrete search space.
+Climbers share a surrogate trained only on completed CV evaluations and
+use a configurable acquisition function after a configurable warm-up.
 """
+
 
 import itertools
 import time
@@ -219,8 +220,15 @@ class AdaptiveGreedySearch:
     cores busy while leaving headroom for the main process (surrogate
     fitting, result merging) and the rest of the system.
 
-    Acquisition:
-        UCB = predicted_mean + exploration_weight * predicted_std
+    Surrogate choices:
+        "rf"  -> Random Forest; between-tree spread is an uncertainty proxy.
+        "gp"  -> Gaussian Process; posterior predictive mean/std.
+        "kde" -> KDE density-ratio ranking, without predictive std.
+
+    Acquisition choices:
+        "auto" -> UCB for RF/GP, density ratio for KDE.
+        "ucb"  -> predicted mean + exploration_weight * predicted spread.
+        "ei"   -> Expected Improvement (approximate when using RF).
     """
 
     def __init__(
