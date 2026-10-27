@@ -1,0 +1,60 @@
+name: Publish release
+
+on:
+  workflow_run:
+    workflows: ["tests"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Verify tested commit is still current and read package version
+        id: release
+        shell: bash
+        run: |
+          TESTED_SHA="${{ github.event.workflow_run.head_sha }}"
+          CURRENT_SHA="$(git rev-parse HEAD)"
+          if [ "$TESTED_SHA" != "$CURRENT_SHA" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping release: main advanced after this test run."
+            exit 0
+          fi
+
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -n 1)"
+          if [ -z "$VERSION" ]; then
+            echo "Could not read version from pyproject.toml" >&2
+            exit 1
+          fi
+
+          TAG="v$VERSION"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping release: tag $TAG already exists."
+            exit 0
+          fi
+
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub release
+        if: steps.release.outputs.publish == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          target_commitish: main
+          name: AGS v${{ steps.release.outputs.version }}
+          body_path: CHANGELOG.md
+          token: ${{ secrets.GITHUB_TOKEN }}
