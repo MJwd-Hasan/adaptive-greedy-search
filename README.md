@@ -116,9 +116,9 @@ print(f"climbers spawned: {search.climbers_spawned}, merged: {search.climbers_me
 | `climber_patience` | `3` | Consecutive non-improving steps before a climber is retired as `"stagnated"`. |
 | `n_jobs` | `-1` | Passed to `joblib.Parallel` for the per-round batched evaluation dispatch. |
 | `max_evaluations` | `25` | Hard cap on the number of grid points evaluated, across the whole swarm. |
-| `surrogate_type` | `"rf"` | `"rf"` (Random Forest; mixed-space default; tree-to-tree dispersion is an uncertainty proxy), `"gp"` (Gaussian Process; posterior mean/std), or `"kde"` (KDE density-ratio ranking). `"tpe"` remains a deprecated alias for `"kde"`, not a full TPE implementation. |
+| `surrogate_type` | `"rf"` | `"rf"` (Random Forest; mixed-space default; tree-to-tree dispersion is an uncertainty proxy), `"gp"` (Gaussian Process; posterior mean/std), or `"kde"` (KDE density-ratio ranking). `"tpe"` remains a deprecated alias for `"kde"`, not a full TPE implementation. |\n| `acquisition` | `"auto"` | `"auto"` chooses UCB for RF/GP and density-ratio ranking for KDE. Also supports `"ucb"`, `"ei"` / `"expected_improvement`, or `"density_ratio"` when compatible with the surrogate. |\n| `min_observations` | `None` | Warm-up target before model-guided search; defaults to `max(2 * parameter_count, 10)`, capped by grid size. |\n| `rf_n_estimators` | `200` | Number of trees in the Random Forest surrogate (minimum 2). |
 | `pruning_strategy` | `"percentile"` | `"percentile"` (heuristic), `"optimistic"` (only safe when `score_upper_bound` is a valid upper bound for the scorer), or `"none"` (full CV, no pruning). |
-| `pruning_percentile` | `25` | Lower = stricter pruning (fewer candidates survive) when using `"percentile"`. |
+| `pruning_percentile` | `25` | Higher percentiles generally make percentile pruning more aggressive (fewer candidates survive). |
 | `max_neighbor_radius` | `4` | How many rings outward a boxed-in climber's plateau escape is allowed to search before it's retired. `0` disables the escape entirely. |
 | `early_stopping_patience` | `None` | Optional *global* stop if the swarm's best score hasn't improved for this many evaluations. Per-climber `climber_patience` is the main stagnation mechanism; this is an extra, off-by-default cap on top. |
 
