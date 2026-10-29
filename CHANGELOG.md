@@ -1,5 +1,23 @@
 # Changelog
 
+## v3.7.1 — Internal Runtime Profiling
+
+### Added
+- Opt-in `profiling=True` instrumentation for algorithm-level wall-clock analysis.
+- `profile_report()` with structured timing rows, call counts, total wall time, evaluation-batch timing, aggregate worker compute, evaluation counts, folds run, and folds saved.
+- Deep timing for candidate pools, Max-Min initialization, local neighborhoods, proposals, acquisition scoring, surrogate fitting/prediction, diversity scoring, plateau escape, space-filling selection, climber spawning/updates, respawn, and evaluation batches.
+
+### Design
+- Profiling is disabled by default to keep the normal optimization hot path free of timer calls.
+- Timings use `time.perf_counter()`.
+- Deep phase timings are explicitly reported as inclusive; nested sections can overlap.
+- Worker model-evaluation runtime is reported separately because summed parallel worker time can exceed wall-clock time.
+
+### Compatibility
+- No search-policy or evaluation-semantic changes from v3.7.0.
+- Existing code remains compatible unless it depends on the exact package version string.
+
+
 ## v3.7.0 — Conditional Spaces and Lazy Candidate Generation
 
 ### Added
