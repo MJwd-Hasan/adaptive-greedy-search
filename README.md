@@ -1,6 +1,6 @@
 # Adaptive Greedy Search (AGS)
 
-**Adaptive Greedy Search (AGS) v3.7.0** is a surrogate-assisted, multi-start adaptive local-search optimizer for finite hyperparameter spaces.
+**Adaptive Greedy Search (AGS) v3.7.1** is a surrogate-assisted, multi-start adaptive local-search optimizer for finite hyperparameter spaces.
 
 AGS combines typed and conditional search-space geometry, RF/GP/KDE surrogate guidance, adaptive trust-region climbers, confidence-bound multi-fidelity racing, diversity-aware batch search, and **lazy candidate generation**.
 
@@ -8,7 +8,27 @@ AGS combines typed and conditional search-space geometry, RF/GP/KDE surrogate gu
 from ags import AdaptiveGreedySearch
 ```
 
-## What's new in 3.7
+## What's new in 3.7.1 — Internal profiling
+
+AGS can now expose where wall-clock time is spent inside the optimizer without requiring an external profiler. Profiling is opt-in so normal runs avoid timing overhead.
+
+```python
+search = AdaptiveGreedySearch(
+    estimator,
+    param_grid,
+    max_evaluations=60,
+    profiling=True,
+)
+
+search.fit(X, y)
+report = search.profile_report()
+```
+
+The report separates major internal phases such as proposal generation, local-neighborhood search, candidate-pool generation, acquisition scoring, surrogate fitting, diversity scoring, plateau escape, respawn, climber updates, and parallel evaluation-batch wall time. It also reports aggregate worker-side model-evaluation time.
+
+**Interpretation:** deep timings are inclusive and may overlap. Worker compute is summed across workers and can exceed total wall time under parallel execution; it must not be subtracted directly from wall time.
+
+## What's new in 3.7.0
 
 ### Conditional hyperparameters
 
@@ -191,6 +211,8 @@ Partial observations never become the reported winner.
 
 ## Important 3.7 parameters and attributes
 
+- `profiling=False`: enable low-overhead internal phase timing when set to `True`.
+- `profile_report()`: return and optionally print the structured timing breakdown from the latest fit.
 - `candidate_pool_size=256`: maximum target size for lazily generated global candidate pools.
 - `search_space_size_upper_bound`: raw product-size upper bound.
 - `lazy_search`: `True` when using the structured lazy engine.
