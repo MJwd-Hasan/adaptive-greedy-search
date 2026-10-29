@@ -172,3 +172,63 @@ def test_v37_end_to_end_conditional_search():
     else:
         assert "gamma" in best
         assert "degree" in best
+
+
+def test_v371_profiling_report_exposes_internal_timings():
+    X, y = make_classification(
+        n_samples=60,
+        n_features=5,
+        n_informative=3,
+        random_state=17,
+    )
+    search = AdaptiveGreedySearch(
+        DummyClassifier(strategy="most_frequent"),
+        {"strategy": ["most_frequent", "prior", "stratified"]},
+        cv=3,
+        scoring="accuracy",
+        n_climbers=1,
+        n_jobs=1,
+        max_evaluations=3,
+        enable_pruning=False,
+        min_observations=2,
+        candidate_pool_size=8,
+        random_state=3,
+        profiling=True,
+    )
+    search.fit(X, y)
+    report = search.profile_report(print_report=False)
+
+    assert report["enabled"] is True
+    assert report["total_wall_time"] > 0
+    assert report["n_evaluations"] > 0
+    assert report["evaluation_batches"] > 0
+    assert report["worker_compute_sum"] >= 0
+    sections = {row["section"] for row in report["sections"]}
+    assert "proposal_generation" in sections
+    assert "evaluation_batch_wall" in sections
+
+
+def test_v371_profiling_disabled_keeps_timing_sections_empty():
+    X, y = make_classification(
+        n_samples=40,
+        n_features=4,
+        n_informative=2,
+        n_redundant=0,
+        random_state=8,
+    )
+    search = AdaptiveGreedySearch(
+        DummyClassifier(),
+        {"strategy": ["most_frequent", "prior"]},
+        cv=2,
+        n_climbers=1,
+        n_jobs=1,
+        max_evaluations=2,
+        enable_pruning=False,
+        candidate_pool_size=8,
+        profiling=False,
+    )
+    search.fit(X, y)
+    report = search.profile_report(print_report=False)
+
+    assert report["enabled"] is False
+    assert report["sections"] == []
