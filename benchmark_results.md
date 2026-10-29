@@ -311,3 +311,50 @@ A useful next hypothesis is that AGS performance depends on **local objective au
 ]
 
 If AGS advantage increases systematically with measurable local structure, the result would explain *when* adaptive greedy search is useful rather than merely ranking optimizers on a fixed benchmark suite.
+
+
+---
+
+## v3.7.1 Profiling Benchmark — Four-Problem Comparison
+
+**Protocol.** AGS v3.7.1 was run with `profiling=True` against Random Search, Optuna, and Hyperopt on four finite HPO problems. Each method used 5 random seeds, evaluation budgets of 30 and 60, 5-fold cross-validation, and macro F1 as the optimization metric. Hyperopt and XGBoost were available. The four search spaces ranged from 540 to 1,080 configurations.
+
+| Problem | Configs | Budget | AGS | Optuna | Hyperopt | Random | AGS wall (s) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| RF — Breast Cancer | 1,080 | 30 | 0.9622 | 0.9641 | 0.9649 | **0.9660** | 11.8 |
+| RF — Breast Cancer | 1,080 | 60 | 0.9623 | 0.9661 | 0.9657 | **0.9664** | 16.8 |
+| RF — Digits | 1,080 | 30 | **0.9783** | 0.9426 | 0.9431 | 0.9410 | 18.1 |
+| RF — Digits | 1,080 | 60 | **0.9796** | 0.9441 | 0.9433 | 0.9425 | 31.7 |
+| SVM — Breast Cancer | 540 | 30 | **0.9811** | 0.9789 | 0.9785 | 0.9781 | 3.5 |
+| SVM — Breast Cancer | 540 | 60 | **0.9811** | 0.9796 | 0.9796 | 0.9800 | 6.2 |
+| XGBoost — Wine | 972 | 30 | **0.9870** | 0.9725 | 0.9716 | 0.9726 | 8.8 |
+| XGBoost — Wine | 972 | 60 | **0.9893** | 0.9737 | 0.9726 | 0.9737 | 16.1 |
+
+Values are means over five seeds.
+
+### Aggregate results
+
+| Budget | AGS | Optuna | Hyperopt | Random | AGS wall | Optuna wall | Hyperopt wall | Random wall |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 30 | **0.9772** | 0.9645 | 0.9645 | 0.9644 | 10.5 s | 7.2 s | 6.5 s | **3.4 s** |
+| 60 | **0.9781** | 0.9659 | 0.9653 | 0.9657 | 17.7 s | 13.1 s | 13.8 s | **6.5 s** |
+
+At budget 30, AGS had mean pairwise advantages of +0.0126 over Optuna, +0.0126 over Hyperopt, and +0.0127 over Random Search. At budget 60 the corresponding differences were +0.0122, +0.0127, and +0.0124. AGS won 3 of the 4 problem-level comparisons against each competitor at both budgets.
+
+### Neutral interpretation
+
+These results strengthen the evidence that AGS can be highly effective on some finite structured search landscapes. The largest separation again occurs on the Digits Random Forest problem: AGS exceeds all three competitors by roughly 0.035–0.038 macro-F1. AGS also leads on the SVM Breast Cancer and XGBoost Wine problems at both budgets.
+
+The result is nevertheless not uniform. On Random Forest Breast Cancer, AGS is behind Optuna, Hyperopt, and Random Search at both budgets. This is important because the same estimator family behaves very differently across Breast Cancer and Digits; the evidence therefore points more strongly toward **landscape-dependent performance** than toward an estimator-specific AGS advantage.
+
+The four-problem aggregate favors AGS, and unlike an aggregate driven only by a single comparator, the direction is similar against Optuna, Hyperopt, and Random Search. However, four independent problems remain too few for a strong general-superiority claim. The large Digits advantage also contributes materially to the aggregate mean. A broader suite of independent datasets and search-space geometries is still required for inferential conclusions.
+
+The runtime comparison shows a consistent cost for the additional search machinery. AGS averages 10.5 s versus 7.2 s for Optuna at budget 30, and 17.7 s versus 13.1 s at budget 60. Hyperopt is similarly faster on average, while Random Search is substantially cheaper. Thus, the present evidence supports a **search-quality versus optimizer-overhead trade-off** rather than a claim that AGS is generally faster.
+
+### Profiling status
+
+The benchmark confirms that the installed v3.7.1 accepts `profiling=True` and that profiling is enabled. This alone does **not** identify the dominant runtime component. For bottleneck analysis, the benchmark must also save or print `search.profile_report()` after each AGS fit and aggregate its `sections`, `worker_compute_sum`, and `total_wall_time` fields across seeds.
+
+The v3.7.1 profiler can separate optimizer-side phases such as proposal generation, local-neighborhood search, candidate-pool generation, acquisition scoring, surrogate fitting, diversity scoring, plateau escape, respawn, climber updates, and evaluation-batch wall time. The current profiler reports aggregate worker model-evaluation runtime separately. Deep phase timings are inclusive and may overlap, so their percentages must not be summed as if they were mutually exclusive.
+
+A finer split of worker time into estimator fitting/scoring versus pruning-decision overhead is **not yet directly instrumented** in v3.7.1. Consequently, the current profiler can answer whether model-evaluation batches dominate wall time and whether surrogate/search machinery is expensive, but it cannot yet attribute worker time precisely between model computation and pruning logic.
