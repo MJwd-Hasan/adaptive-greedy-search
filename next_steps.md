@@ -1309,6 +1309,18 @@ Inactive parameters must be encoded in a way that does not create artificial dis
 
 ---
 
+# Version 3.7.1 — Internal Runtime Profiling
+
+**Status: Implemented.**
+
+This maintenance release adds opt-in algorithm-level profiling without changing the v3.7 search policy. With `profiling=True`, AGS records wall-clock time and call counts for major search phases and exposes them through `profile_report()`.
+
+The profiler distinguishes parallel evaluation-batch wall time from aggregate worker-side estimator runtime. Deep timings are intentionally documented as inclusive because proposal generation contains nested neighborhood, acquisition, diversity, and restart operations.
+
+The profiling layer is intended to support evidence-based optimization of AGS itself: future changes to neighborhood expansion, surrogate refitting, candidate generation, and restart policy should be motivated by measured bottlenecks rather than assumptions.
+
+---
+
 # 3. Version Summary
 
 | Version | Main Goal | Core Change |
@@ -1320,6 +1332,7 @@ Inactive parameters must be encoded in a way that does not create artificial dis
 | **3.5** | Sound early resource allocation | Successive Halving / racing |
 | **3.6** | Coordinated swarm search | Diversity-aware batch proposals and restart |
 | **3.7** | Scalable structured HPO | Conditional spaces + lazy candidate generation |
+| **3.7.1** | Runtime observability | Opt-in internal phase profiling |
 
 ---
 
