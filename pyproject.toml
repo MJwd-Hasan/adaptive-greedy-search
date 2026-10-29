@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "adaptive-greedy-search"
-version = "3.7.0"
-description = "Adaptive Greedy Search: surrogate-assisted HPO with conditional lazy search spaces, adaptive trust regions, multi-fidelity racing, and diversity-aware batch search."
+version = "3.7.1"
+description = "Adaptive Greedy Search: surrogate-assisted HPO with conditional lazy search spaces, adaptive trust regions, multi-fidelity racing, diversity-aware search, and opt-in internal profiling."
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
