@@ -29,6 +29,25 @@ from .utils import safe_index
 
 NEG_INF = float("-inf")
 
+def _profiled(section):
+    """Low-overhead wall-clock profiler for AGS internal phases."""
+    def decorate(func):
+        def wrapped(self, *args, **kwargs):
+            if not getattr(self, "profiling", False):
+                return func(self, *args, **kwargs)
+            start = time.perf_counter()
+            try:
+                return func(self, *args, **kwargs)
+            finally:
+                elapsed = time.perf_counter() - start
+                self.profile_times_[section] = self.profile_times_.get(section, 0.0) + elapsed
+                self.profile_calls_[section] = self.profile_calls_.get(section, 0) + 1
+        wrapped.__name__ = func.__name__
+        wrapped.__doc__ = func.__doc__
+        wrapped.__qualname__ = func.__qualname__
+        return wrapped
+    return decorate
+
 
 # ============================================================
 # CLIMBER
@@ -287,6 +306,7 @@ class AdaptiveGreedySearch:
         diversity_weight=0.25,
         restart_diversity_weight=0.5,
         candidate_pool_size=256,
+        profiling=False,
     ):
 
         if n_climbers is None:
@@ -351,6 +371,10 @@ class AdaptiveGreedySearch:
         self.diversity_weight = float(diversity_weight)
         self.restart_diversity_weight = float(restart_diversity_weight)
         self.candidate_pool_size = int(candidate_pool_size)
+        self.profiling = bool(profiling)
+        self.profile_times_ = {}
+        self.profile_calls_ = {}
+        self.profile_stats_ = {}
 
         valid_acquisitions = {
             "auto", "ucb", "ei", "expected_improvement", "density_ratio"
@@ -504,6 +528,7 @@ class AdaptiveGreedySearch:
     def get_neighbors(self, state):
         return self._semantic_neighbors(state, unvisited_only=True)
 
+    @_profiled("local_neighborhood_search")
     def _states_within_hops(self, start_state, radius, excluded=None):
         """Return unvisited states inside a climber's semantic trust region."""
         excluded = set(excluded or ())
@@ -530,6 +555,7 @@ class AdaptiveGreedySearch:
     # MAX-MIN (FARTHEST-POINT) SEEDING
     # ========================================================
 
+    @_profiled("candidate_pool_generation")
     def _candidate_pool(self, excluded=None, size=None):
         """Build a bounded lazy candidate pool instead of materializing the grid."""
         excluded = set(excluded or ())
@@ -541,6 +567,7 @@ class AdaptiveGreedySearch:
             exclude=excluded,
         )
 
+    @_profiled("max_min_initialization")
     def _get_max_min_seeds(self, n_seeds):
         """Lazy farthest-point seeding from a bounded valid candidate pool."""
         n_seeds = max(0, int(n_seeds))
@@ -577,6 +604,7 @@ class AdaptiveGreedySearch:
     # SURROGATE
     # ========================================================
 
+    @_profiled("surrogate_fit")
     def fit_surrogate(self):
         """Fit the surrogate only on complete CV observations."""
         if not self.completed_evaluations:
@@ -596,6 +624,7 @@ class AdaptiveGreedySearch:
             and len(self.completed_evaluations) >= self.min_observations
         )
 
+    @_profiled("acquisition_scoring")
     def acquisition_scores(self, states):
         """Score states with the configured acquisition function."""
         features = np.array(
@@ -615,6 +644,7 @@ class AdaptiveGreedySearch:
             best_score=best_score,
         )
 
+    @_profiled("surrogate_prediction")
     def predict_uncertainty(self, states):
         """Return predictive mean and spread for RF/GP surrogates only."""
         if hasattr(self.surrogate, "score_density_ratio"):
@@ -656,6 +686,7 @@ class AdaptiveGreedySearch:
         if status == "merged":
             self.climbers_merged += 1
 
+    @_profiled("diversity_scoring")
     def _diversity_bonus(self, states, references):
         if not references:
             return np.ones(len(states), dtype=float)
@@ -677,6 +708,7 @@ class AdaptiveGreedySearch:
         best = np.flatnonzero(np.isclose(scores, np.max(scores)))
         return candidates[int(self.rng.choice(best))]
 
+    @_profiled("climber_spawn")
     def _spawn_climber(self, exclude):
         """Respawn using acquisition quality plus distance from active basins."""
         remaining = self._candidate_pool(
@@ -708,6 +740,7 @@ class AdaptiveGreedySearch:
         self._climber_by_id[climber.id] = climber
         return climber
 
+    @_profiled("space_filling_selection")
     def _get_space_filling_candidate(self, excluded=None):
         """Pick a diverse candidate from a bounded lazy pool."""
         excluded = set(excluded or ())
@@ -730,6 +763,7 @@ class AdaptiveGreedySearch:
         tied = np.flatnonzero(np.isclose(nearest_distances, best_distance))
         return remaining[int(self.rng.choice(tied))]
 
+    @_profiled("plateau_escape")
     def _resolve_plateau(self, start_state, excluded=None):
         """
         Local plateau escape for a boxed-in climber.
@@ -771,6 +805,7 @@ class AdaptiveGreedySearch:
             )
         return candidates[int(self.rng.integers(len(candidates)))]
 
+    @_profiled("proposal_generation")
     def _propose(self):
         """Create a coordinated diversity-aware batch inside adaptive trust regions."""
         proposals = {}
@@ -834,6 +869,7 @@ class AdaptiveGreedySearch:
 
         return proposals, retired_here
 
+    @_profiled("evaluation_batch_wall")
     def evaluate_batch(self, proposals, X, y, parallel):
         """
         Evaluate all proposed candidates in parallel. Workers return result
@@ -875,6 +911,10 @@ class AdaptiveGreedySearch:
             for _, state in jobs
         )
 
+        if self.profiling:
+            self.profile_stats_["worker_compute_sum"] = self.profile_stats_.get("worker_compute_sum", 0.0) + sum(float(res["runtime"]) for res in outputs)
+            self.profile_stats_["evaluation_batches"] = self.profile_stats_.get("evaluation_batches", 0) + 1
+
         results = {}
         for (climber_id, _), res in zip(jobs, outputs):
             state = res["state"]
@@ -913,6 +953,7 @@ class AdaptiveGreedySearch:
 
         return results
 
+    @_profiled("climber_update")
     def _update_climbers(self, results):
         """Update positions, personal bests, and v3.4 adaptive trust radii."""
         stagnated = []
@@ -965,6 +1006,7 @@ class AdaptiveGreedySearch:
                 stagnated.append(climber)
         return stagnated
 
+    @_profiled("respawn")
     def _respawn(self, retired):
         """Replace each retired climber while evaluation budget remains."""
         if not retired:
@@ -984,8 +1026,52 @@ class AdaptiveGreedySearch:
     # MAIN FIT
     # ========================================================
 
+    def profile_report(self, print_report=True):
+        """Return structured timing data for the most recent fit.
+
+        Deep phase timings are inclusive, so nested rows should not be summed.
+        Worker compute is aggregate worker-side model evaluation time and may
+        exceed wall time when evaluations execute in parallel.
+        """
+        total = float(getattr(self, "total_time", 0.0))
+        rows = []
+        ordered = sorted(self.profile_times_.items(), key=lambda item: item[1], reverse=True)
+        for name, seconds in ordered:
+            rows.append({
+                "section": name,
+                "seconds": float(seconds),
+                "percent_total_wall": (100.0 * seconds / total) if total > 0 else 0.0,
+                "calls": int(self.profile_calls_.get(name, 0)),
+            })
+        report = {
+            "enabled": self.profiling,
+            "total_wall_time": total,
+            "sections": rows,
+            "worker_compute_sum": float(self.profile_stats_.get("worker_compute_sum", 0.0)),
+            "evaluation_batches": int(self.profile_stats_.get("evaluation_batches", 0)),
+            "n_evaluations": int(getattr(self, "n_evaluations", 0)),
+            "total_folds_run": int(getattr(self, "total_folds_run", 0)),
+            "folds_saved": int(getattr(self, "folds_saved", 0)),
+            "note": "Section timings are inclusive; nested sections overlap.",
+        }
+        if print_report:
+            print("AGS profiling report")
+            print("=" * 72)
+            print("Total wall time: {:.4f}s".format(total))
+            for row in rows:
+                print("{:<30} {:>9.4f}s {:>7.2f}% calls={}".format(
+                    row["section"], row["seconds"], row["percent_total_wall"], row["calls"]
+                ))
+            print("-" * 72)
+            print("Worker compute sum: {:.4f}s".format(report["worker_compute_sum"]))
+            print("Note: deep timings are inclusive and may overlap.")
+        return report
+
     def fit(self, X, y):
         total_start = time.perf_counter()
+        self.profile_times_ = {}
+        self.profile_calls_ = {}
+        self.profile_stats_ = {}
 
         # ---- reset (fit is safe to call more than once, and deterministic) ----
         self.rng = np.random.default_rng(self.random_state)
