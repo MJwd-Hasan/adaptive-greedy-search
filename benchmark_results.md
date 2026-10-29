@@ -268,3 +268,46 @@
 | AGS better | 4/8 |
 | Optuna better | 3/8 |
 | Wilcoxon p | 0.8438 [not significant] |
+
+---
+
+## Research Interpretation
+
+The benchmark should be interpreted as evidence of **problem-dependent competitiveness**, not general superiority of one optimizer.
+
+Across the eight reported problems, AGS has a positive mean difference relative to Optuna at both budgets (+0.0085 at 30 evaluations and +0.0082 at 60), but the median differences are much smaller (+0.0010 and +0.0006). The Wilcoxon signed-rank result is p=0.8438 at both budgets, so the aggregate comparison does **not** establish a statistically significant AGS advantage at the conventional 0.05 level.
+
+### Where AGS appears strongest
+
+The best-so-far trajectories show large early-budget advantages on `rf_digits` and `mlp_digits`. On `rf_digits`, AGS reaches 0.9704 by evaluation 5 and 0.9769 by evaluation 30, compared with 0.9346 and 0.9403 for Optuna. On `mlp_digits`, AGS reaches 0.9681 by evaluation 5 and 0.9697 by evaluation 30, compared with 0.9260 and 0.9288 for Optuna. These cases motivate the hypothesis that AGS can exploit useful local structure particularly efficiently on some finite landscapes.
+
+The conditional SVM experiment is also encouraging: AGS remains competitive with all comparators and finishes above Optuna at both reported budgets. This is relevant to the structured-space design introduced in v3.7, although broader conditional-space experiments are needed before attributing the difference specifically to conditional geometry.
+
+### Where AGS is weaker
+
+AGS trails Optuna on `rf_breast_cancer`, `knn_iris`, `rf_moons`, and `rf_noisy` at the reported checkpoints. Random search is also competitive or better on several of these tasks. This suggests that AGS's local-search bias is not uniformly beneficial; weakly structured, noisy, simple, or broad-plateau landscapes may reward wider stochastic coverage instead.
+
+The difference between the positive mean and near-zero median AGS advantage is important: the aggregate mean is influenced by a small number of comparatively large AGS wins. A neutral interpretation is therefore that AGS currently shows a **higher upside on particular landscapes**, rather than a consistent advantage across tasks.
+
+### Runtime
+
+At budget 60 the aggregate reported wall times are 10.4 s for AGS and 10.5 s for Optuna, with Hyperopt at 11.6 s and Random Search at 4.6 s. Within this benchmark, AGS is therefore approximately at wall-clock parity with Optuna on average, while Random Search remains substantially cheaper in optimizer overhead. Runtime conclusions should remain tied to this protocol because estimator cost, dataset size, parallelism, and hardware can materially change the relative overhead.
+
+Starting with v3.7.1, AGS includes opt-in internal profiling. Future benchmark runs should record the timing breakdown for proposal generation, local-neighborhood search, candidate generation, surrogate fitting/prediction, acquisition/diversity scoring, plateau/restart logic, and evaluation-batch wall time. This will separate optimizer overhead from model-evaluation cost.
+
+### Benchmark integrity notes
+
+- SMAC3 entries reported as `-inf` / `nan` should be treated as **failed or unavailable runs**, not as valid losses to AGS or the other methods. They should be excluded from comparative statistical claims until the integration is corrected and rerun.
+- The reported AGS trajectories for `svm_conditional` and `svm_flat_wine` are identical at every displayed checkpoint; the Random trajectories are also identical. This may be legitimate if the two protocol cases intentionally share the same underlying objective, but it should be audited before publication to rule out result reuse, caching, or benchmark wiring errors.
+- Budget-30 and budget-60 results from the same problem are correlated observations and should not be treated as independent tasks in inferential statistics.
+- More independent datasets and search landscapes are more informative for generalization than adding further random seeds to the same small set of tasks.
+
+### Research direction suggested by the benchmark
+
+A useful next hypothesis is that AGS performance depends on **local objective autocorrelation**. For neighboring configurations (x) and (x'), future work can estimate whether small search-space distance tends to imply similar validation performance and test whether that landscape statistic predicts
+
+[
+\Delta_{AGS}=F1_{AGS}-F1_{competitor}.
+]
+
+If AGS advantage increases systematically with measurable local structure, the result would explain *when* adaptive greedy search is useful rather than merely ranking optimizers on a fixed benchmark suite.
